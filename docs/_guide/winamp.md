@@ -41,6 +41,7 @@ Most controls match Winamp. As in Winamp, Play on a song that is already
 playing starts it again from the beginning; Pause pauses. These work
 differently:
 
+- The heart adds or removes the current song from Liked Songs, including in the rolled-up player.
 - **Stop** pauses and rewinds.
 - **I** opens the playing album in the main window.
 - Repeat is either on or off.

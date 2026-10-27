@@ -428,6 +428,7 @@ fn full_window(
     windows_buttons(app, view);
     transport(app, view, now);
     shuffle_repeat(app, view, now);
+    like_button(app, view, now, Area::new(239, 89, 14, 15), true);
     if view
         .interact(layout::ABOUT, "about", Sense::click())
         .on_hover_text(super::keys::platform_shortcut(
@@ -440,6 +441,70 @@ fn full_window(
     }
 
     vis_moving
+}
+
+/// A small pixel heart, using the skin's playlist colours in both layouts.
+fn likeable_track(now: Option<&NowPlaying>) -> Option<&NowPlaying> {
+    now.filter(|now| !now.is_episode && now.uri.starts_with("spotify:track:"))
+}
+
+fn like_button(app: &mut App, view: &mut View, now: Option<&NowPlaying>, area: Area, framed: bool) {
+    let Some(now) = likeable_track(now) else {
+        return;
+    };
+    let saved = app.is_saved(&now.uri).unwrap_or(false);
+    let tooltip = if saved {
+        gettext(app.locale, "Remove from Liked Songs")
+    } else {
+        gettext(app.locale, "Save to Liked Songs")
+    };
+    let response = view
+        .interact(area, "winamp-like", Sense::click())
+        .on_hover_text(tooltip.as_ref());
+    if framed {
+        let rgb = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
+        let background = rgb(view.skin.playlist.normal_background);
+        let edge = rgb(view.skin.playlist.selected_background);
+        view.fill(area.x, area.y, area.width, area.height, edge);
+        view.fill(
+            area.x + 1,
+            area.y + 1,
+            area.width - 2,
+            area.height - 2,
+            background,
+        );
+    }
+    let [r, g, b] = if saved {
+        view.skin.playlist.current
+    } else {
+        view.skin.playlist.normal
+    };
+    let color = Color32::from_rgb(r, g, b);
+    let rows = if saved {
+        [
+            "0110110", "1111111", "1111111", "0111110", "0011100", "0001000",
+        ]
+    } else {
+        [
+            "0110110", "1001001", "1000001", "0100010", "0010100", "0001000",
+        ]
+    };
+    for (y, row) in rows.iter().enumerate() {
+        for (x, pixel) in row.bytes().enumerate() {
+            if pixel == b'1' {
+                view.fill(
+                    area.x + (area.width - 7) / 2 + x as u32,
+                    area.y + (area.height - 6) / 2 + y as u32,
+                    1,
+                    1,
+                    color,
+                );
+            }
+        }
+    }
+    if response.clicked() {
+        app.actions.push(Action::ToggleSaved(now.uri.clone()));
+    }
 }
 
 /// The main window rolled up: the bar with the time in the small font,
@@ -528,6 +593,8 @@ fn shade_bar(
     {
         app.actions.push(Action::ToggleWinampWindow);
     }
+
+    like_button(app, view, now, Area::new(159, 2, 10, 10), false);
 
     // The time, in the small font; a click counts down instead.
     if view
@@ -1596,6 +1663,18 @@ mod tests {
             is_episode: false,
             resuming: false,
         }
+    }
+
+    #[test]
+    fn heart_only_accepts_spotify_tracks() {
+        let mut playing = now("Song", "Artist", 1000);
+        assert!(likeable_track(Some(&playing)).is_some());
+        playing.is_episode = true;
+        assert!(likeable_track(Some(&playing)).is_none());
+        playing.is_episode = false;
+        playing.uri = "spotify:local:artist:album:song".into();
+        assert!(likeable_track(Some(&playing)).is_none());
+        assert!(likeable_track(None).is_none());
     }
 
     #[test]
