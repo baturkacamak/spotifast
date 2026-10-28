@@ -59,7 +59,11 @@ fn stack_height(settings: &crate::settings::Settings) -> u32 {
         };
     }
     if settings.jam_open {
-        height += layout::JAM_HEIGHT;
+        height += if settings.jam_shaded {
+            layout::JAM_SHADE_HEIGHT
+        } else {
+            layout::JAM_HEIGHT
+        };
     }
     height
 }
@@ -416,7 +420,11 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             textures: &textures,
             mask: None,
         };
-        jam::show(app, &mut below);
+        if app.settings.jam_shaded {
+            jam::shade(app, &mut below, focused);
+        } else {
+            jam::show(app, &mut below, focused);
+        }
     }
 
     if vis_moving {
@@ -871,12 +879,12 @@ fn jam_badge(app: &mut App, view: &mut View) {
     let mut left = area.x;
     if hosting.is_some() {
         let [r, g, b] = view.skin.playlist.current;
-        view.fill(left, area.y + 1, 3, 3, Color32::from_rgb(r, g, b));
+        view.fill(left, area.y + 5, 3, 3, Color32::from_rgb(r, g, b));
         left += 5;
     }
     view.text(
         &label,
-        Area::new(left, area.y, area.width - (left - area.x), area.height),
+        Area::new(left, area.y + 3, area.width - (left - area.x), 6),
     );
     let response = response.on_hover_text(gettext(app.locale, "Jam").as_ref());
     if response.clicked() {

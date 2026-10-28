@@ -75,9 +75,12 @@ Jam**; starting one copies its link at the same time, so it is ready to paste.
 
 While a Jam runs, the strip beside the bitrate shows a small **JAM** badge with
 the listener count. Clicking it opens the Jam window under the player: who is
-listening, the link, and the buttons to copy it or end the Jam. Its X closes
-the window only, not the Jam; the music and the session carry on, and the badge
-stays lit. The listener count in the submenu opens the same window.
+listening, the link, and the buttons to copy it or end the Jam. It is built
+from the playlist's own title bar and borders, so it matches the equalizer and
+the playlist in any skin, and its shade button rolls it up to a one-line bar
+with the count, like theirs. Its X closes the window only, not the Jam; the
+music and the session carry on, and the badge stays lit. The listener count in
+the submenu opens the same window.
 
 Someone joining or leaving is announced for a moment in the player's scrolling
 line, the one that usually shows the song.

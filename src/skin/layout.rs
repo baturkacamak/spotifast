@@ -67,7 +67,7 @@ areas! {
     KHZ = (156, 43, 10, 6);
     /// The strip between the bitrate and MONO/STEREO, where the Jam badge
     /// sits: skin backgrounds leave it empty.
-    JAM_BADGE = (166, 41, 46, 12);
+    JAM_BADGE = (170, 41, 42, 12);
     VISUALIZER = (24, 43, 76, 16);
     MONO = (212, 41, 27, 12);
     STEREO = (239, 41, 29, 12);
@@ -102,6 +102,7 @@ pub const PLAYLIST_MIN_HEIGHT: u32 = 116;
 pub const PLAYLIST_SHADE_HEIGHT: u32 = 14;
 /// The Jam window under the playlist, in skin pixels.
 pub const JAM_HEIGHT: u32 = 120;
+pub const JAM_SHADE_HEIGHT: u32 = 14;
 pub const PLAYLIST_MAX_HEIGHT: u32 = 116 + 29 * 20;
 pub const PLAYLIST_RESIZE_STEP: u32 = 29;
 /// The title bar's buttons, from the playlist's top left.

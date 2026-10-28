@@ -408,6 +408,8 @@ pub struct Settings {
     pub eq_open: bool,
     /// The Jam window is open under the mini player.
     pub jam_open: bool,
+    /// The Jam window rolled up to its shade bar.
+    pub jam_shaded: bool,
     /// The equalizer shapes local playback.
     pub eq_on: bool,
     /// The preamp, in decibels, never above zero.
@@ -550,6 +552,7 @@ impl Default for Settings {
             playlist_height: 174,
             eq_open: false,
             jam_open: false,
+            jam_shaded: false,
             eq_on: false,
             eq_preamp_db: 0.0,
             eq_bands_db: [0.0; 10],
@@ -1373,6 +1376,7 @@ mod tests {
         assert_eq!(settings.vis, super::VisMode::Bars);
         assert!(!settings.playlist_open);
         assert!(!settings.jam_open);
+        assert!(!settings.jam_shaded);
         assert_eq!(settings.playlist_height, 174);
         assert!(!settings.eq_on);
         assert_eq!(settings.eq_bands_db, [0.0; 10]);

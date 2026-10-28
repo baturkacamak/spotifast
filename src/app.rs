@@ -12354,6 +12354,10 @@ impl App {
                 self.settings.jam_open = !self.settings.jam_open;
                 self.settings_dirty = true;
             }
+            Action::ToggleWinampJamShade => {
+                self.settings.jam_shaded = !self.settings.jam_shaded;
+                self.settings_dirty = true;
+            }
             Action::ToggleEq => {
                 self.settings.eq_on = !self.settings.eq_on;
                 self.push_eq();

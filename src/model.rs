@@ -1432,6 +1432,8 @@ pub enum Action {
     ShowWinampJam,
     /// Show or hide the Jam window under the mini player.
     ToggleWinampJam,
+    /// Roll the Jam window up to its shade bar, or down again.
+    ToggleWinampJamShade,
     SetLyricsFullscreen(bool),
     LyricsLineShown(Option<usize>),
     FollowLyrics,

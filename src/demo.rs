@@ -6928,19 +6928,22 @@ mod tests {
                 },
             ],
         });
-        let size = crate::ui::winamp::window_size(&app.settings, 2.0);
         let mut frame = 0;
-        for _ in 0..2 {
-            frame += 1;
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    time: Some(f64::from(frame) / 60.0),
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                    ..Default::default()
-                },
-                |ui| crate::ui::winamp::show(&mut app, ui),
-            );
-            output.textures_delta.clear();
+        for shaded in [false, true] {
+            app.settings.jam_shaded = shaded;
+            let size = crate::ui::winamp::window_size(&app.settings, 2.0);
+            for _ in 0..2 {
+                frame += 1;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(f64::from(frame) / 60.0),
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |ui| crate::ui::winamp::show(&mut app, ui),
+                );
+                output.textures_delta.clear();
+            }
         }
         app.backend.shutdown();
     }
