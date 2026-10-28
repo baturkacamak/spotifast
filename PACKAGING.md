@@ -114,6 +114,15 @@ It uploads a workflow artifact only. After checking the bundle, attach it to the
 existing release and add its hash to `checksums.txt`, preserving every existing
 asset and checksum. Release tags stay immutable.
 
+For a local testing build, `packaging/flatpak/install-local.sh` compiles the
+checkout and installs it over the user's Flatpak through a local, unsigned
+repository. It reuses the installed runtime, sandbox permissions and data, so
+the listener stays signed in, and it does not need `flatpak-builder` or the
+SDK. `--debug` installs a debug build, `--run` opens the app afterwards, and
+`--clean` drops the local repository. Quit the running Flatpak after installing
+to use the new build. The local remote is named `spotifast-local`, and
+`flatpak update` follows it until the release Flatpak is installed again.
+
 Check AUR source-directory compatibility against a downloaded source archive
 with `bash packaging/test-arch-source.sh SOURCE_ARCHIVE VERSION`. It runs the
 recipe's prepare/build/check directory handling with Cargo calls stubbed out;
