@@ -853,17 +853,14 @@ fn jam_menu(app: &mut App, ui: &mut Ui, locale: Locale) {
         }
         crate::jam::State::Hosting(session) => {
             let listening = session.members.len() as u32;
-            let label = match listening {
-                0 | 1 => gettext(locale, "Only you, so far").into_owned(),
-                count => ngettext(
-                    locale,
-                    // Translators: {count} is the number of people in the Jam.
-                    "{count} listening",
-                    "{count} listening",
-                    count,
-                )
-                .into_owned(),
-            };
+            let label = ngettext(
+                locale,
+                // Translators: {count} is the number of people in the Jam.
+                "{count} person listening",
+                "{count} people listening",
+                listening,
+            )
+            .into_owned();
             if ui.button(label).clicked() {
                 app.actions.push(Action::ShowJamPanel);
                 app.actions.push(Action::ToggleWinampWindow);

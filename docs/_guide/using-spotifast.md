@@ -706,8 +706,8 @@ controls keep their room; widen the window to bring it back.
 
 **Jam** in the account menu starts a Jam from this computer and opens its
 panel on the right. The panel lists everyone in the Jam and shows the link to
-share; **Copy Jam link** puts it on the clipboard, and **End the Jam** closes
-the session for everyone. Starting one needs playback on this computer and a
+share, `https://open.spotify.com/socialsession/…`; **Copy Jam link** puts it on
+the clipboard, and **End the Jam** closes the session for everyone. Starting one needs playback on this computer and a
 Premium account, since this computer is the device that plays.
 
 Guests join from their own Spotify apps with the link and add songs to the

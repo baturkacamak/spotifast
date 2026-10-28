@@ -11688,12 +11688,7 @@ impl App {
             }
             Action::CopyJamLink => {
                 if let Some(session) = self.jam.session() {
-                    let link = if session.uri.is_empty() {
-                        session.id.clone()
-                    } else {
-                        session.uri.clone()
-                    };
-                    ctx.copy_text(link);
+                    ctx.copy_text(session.link());
                     self.toast(gettext(self.locale, "Link copied"));
                 }
             }

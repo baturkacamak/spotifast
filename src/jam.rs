@@ -37,6 +37,15 @@ pub struct Member {
     pub image: Option<String>,
 }
 
+impl JamSession {
+    /// The link to share. Spotify's web address for the session redirects
+    /// to the app's own link, so it opens on a phone that has Spotify even
+    /// though the `spotify:socialsession:` URI itself is not a web link.
+    pub fn link(&self) -> String {
+        format!("https://open.spotify.com/socialsession/{}", self.id)
+    }
+}
+
 impl Member {
     pub fn display_name(&self) -> &str {
         if self.name.is_empty() {
@@ -372,6 +381,15 @@ mod tests {
                 name: "Batur Kacamak".into(),
                 image: Some("https://i.scdn.co/small.jpg".into()),
             }]
+        );
+    }
+
+    #[test]
+    fn the_shared_link_opens_spotifys_session_page() {
+        let session = decode_session(&session_bytes()).unwrap();
+        assert_eq!(
+            session.link(),
+            "https://open.spotify.com/socialsession/2lrq4k8j9oFLl2g4YcBg5Z"
         );
     }
 
