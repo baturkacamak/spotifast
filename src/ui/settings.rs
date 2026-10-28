@@ -622,6 +622,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let normalize_volume = gettext(locale, "Normalize volume");
     let autoplay = gettext(locale, "Autoplay");
     let gapless = gettext(locale, "Gapless playback");
+    let blend = gettext(locale, "Blend songs into each other");
     let keep_playing = gettext(locale, "Keep music playing when the window closes");
     let update_checks = gettext(locale, "Automatic update checks");
     let audio_cache = gettext(locale, "Audio cache");
@@ -730,6 +731,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         )
         .when(!cfg!(target_os = "macos")),
         RowText::new(start_with_computer.clone(), start_detail).when(start_available),
+        RowText::new(
+            blend.clone(),
+            gettext(
+                locale,
+                "Mix the end of one song into the next, on the beat.",
+            ),
+        ),
     ];
     if section_matches(&needle, &playback, &playback_rows) {
         any_visible = true;
@@ -853,6 +861,32 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     changed = true;
                     playback_dirty = true;
                 }
+            });
+            filtered_row(ui, &palette, &needle, &playback, &playback_rows[18], |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut on = app.settings.crossfade_seconds > 0;
+                    if widgets::switch(ui, &palette, &blend, &mut on).changed() {
+                        app.settings.crossfade_seconds = if on { 6 } else { 0 };
+                        app.actions
+                            .push(Action::SetCrossfade(app.settings.crossfade_seconds));
+                        changed = true;
+                    }
+                    if app.settings.crossfade_seconds > 0 {
+                        let current = app.settings.crossfade_seconds;
+                        for seconds in [4u8, 6, 8, 12] {
+                            let label = format!("{seconds} s");
+                            if theme::soft_button(ui, &palette, None, &label, current == seconds)
+                                .clicked()
+                                && current != seconds
+                            {
+                                app.settings.crossfade_seconds = seconds;
+                                app.actions.push(Action::SetCrossfade(seconds));
+                                changed = true;
+                            }
+                        }
+                    }
+                });
             });
             filtered_row(ui, &palette, &needle, &playback, &playback_rows[6], |ui| {
                 if widgets::switch(

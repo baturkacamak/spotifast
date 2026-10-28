@@ -11141,6 +11141,16 @@ impl App {
                 self.volume_before_mute = None;
                 self.set_volume(percent, true);
             }
+            Action::SetCrossfade(seconds) => {
+                self.settings.crossfade_seconds = seconds.min(12);
+                self.settings_dirty = true;
+                // A player that is not up yet reads the saved value when it
+                // starts, so there is nothing to tell it.
+                if self.local_ready {
+                    self.backend
+                        .player(PlayerCommand::Crossfade(self.settings.crossfade_seconds));
+                }
+            }
             Action::PreviewVolume(percent) => self.set_volume(percent, false),
             Action::VolumeBy(delta) => {
                 if let Some(now) = self.now_playing() {
@@ -13447,6 +13457,7 @@ pub fn engine_config(
         normalisation: settings.normalisation,
         autoplay: settings.autoplay,
         gapless: settings.gapless,
+        crossfade_seconds: settings.crossfade_seconds,
         buffer_ms: settings.audio_buffer_ms,
         audio_device: settings
             .audio_device

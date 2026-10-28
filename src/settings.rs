@@ -268,6 +268,9 @@ pub struct Settings {
     pub normalisation: bool,
     pub autoplay: bool,
     pub gapless: bool,
+    /// Seconds of overlap between one song and the next when they blend, or
+    /// zero for none.
+    pub crossfade_seconds: u8,
     /// The output local playback uses: the id of a device
     /// `fastframe_audio::output_devices` lists, or `None` for the system
     /// default. Files from 0.13.3 and earlier may hold a device's name instead; see
@@ -487,6 +490,7 @@ impl Default for Settings {
             normalisation: false,
             autoplay: true,
             gapless: true,
+            crossfade_seconds: 6,
             audio_device: None,
             local_files_folder: None,
             audio_buffer_ms: default_buffer_ms(),
@@ -1002,6 +1006,18 @@ impl ManualProxy {
 #[cfg(test)]
 mod tests {
     use super::Settings;
+
+    /// Songs blend by default, and a file written before the blend existed
+    /// gets the same default instead of silence between every song.
+    #[test]
+    fn songs_blend_unless_the_saved_choice_says_otherwise() {
+        assert_eq!(Settings::default().crossfade_seconds, 6);
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.crossfade_seconds, 6);
+        let chosen: Settings =
+            serde_json::from_value(serde_json::json!({"crossfade_seconds": 0})).unwrap();
+        assert_eq!(chosen.crossfade_seconds, 0);
+    }
 
     #[test]
     fn new_profiles_follow_the_system_and_saved_choices_are_preserved() {

@@ -247,8 +247,17 @@ The Web API and librespot do not provide these features:
   librespot session which ones and leaves them out of the Podcasts shelf.
 - **Offline listening and downloads.** Spotify's DRM and the project's scope
   rule these out.
-- **Playback speed and crossfade.** librespot supports neither. Spotifast
-  would have to add them to its own audio path.
+- **Playback speed.** librespot does not support it.
+- **Crossfade and the phone's Automix.** librespot has no crossfade, so
+  Spotifast blends in the patched player it links: it decodes the opening of
+  the preloaded next song and mixes it over the end of the playing one, on a
+  bar line of the playing song, with the incoming low end held back until the
+  outgoing one leaves and the outgoing low end swept away, and at its tempo
+  when the two are within four per cent. Spotify's own Automix is different: its transition recipes (cue
+  points, EQ and filter sweeps, looping, beatmatchability) come from an
+  internal service and a native library that have not been reverse
+  engineered, so the result is close rather than identical. There is no
+  option for it on Spotify's side to turn on.
 - **Free-account playback.** Replacing Spotify audio with another source is
   also out of scope. See the
   [contribution guide](https://github.com/crmne/spotifast/blob/main/CONTRIBUTING.md).

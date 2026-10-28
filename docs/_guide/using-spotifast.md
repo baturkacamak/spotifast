@@ -276,6 +276,19 @@ The default local output smooths volume and mute changes over 30 ms. Explicit
 track changes and play/pause/stop use nominal 50 ms fades. Stopping can shorten
 the fade to the queued audio. Natural track transitions remain gapless.
 
+**Blend songs into each other** in Settings, under Playback, mixes the end of
+one song into the start of the next instead of cutting between them. The blend
+begins on a bar line of the playing song and lasts whole bars, one to four of
+them, about 4, 6, 8 or 12 seconds depending on the tempo. The next song enters
+where its intro gives way to the drop, when that is within the first four
+seconds, or else on a bar line of its opening, with its low end held back. The
+bass comes back as the playing song leaves, whose own low end is swept away
+over the last bars, so two kicks and two basslines do not pile up.
+When the next song's tempo is within four per cent, its opening is pulled to
+the playing song's tempo so the beats stay together; a wider difference falls
+back to a plain crossfade. It needs gapless playback, and it is not Spotify's
+Automix: Spotify's transition recipes are its own.
+
 Left and right arrows adjust a focused volume slider by five percentage
 points, or the seek slider by one percent of the song. Screen readers can
 also read and set these sliders' values. `Ctrl+F` (`Cmd+F` on macOS) focuses

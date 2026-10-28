@@ -1,0 +1,1628 @@
+diff --git a/playback/src/config.rs b/playback/src/config.rs
+index d478530..45baeaa 100644
+--- a/playback/src/config.rs
++++ b/playback/src/config.rs
+@@ -129,6 +129,10 @@ pub struct PlayerConfig {
+ 
+     pub local_file_directories: Vec<PathBuf>,
+ 
++    /// Length of the crossfade into the next preloaded track, mixed over the
++    /// end of the current one. `None` disables it.
++    pub crossfade_ms: Option<u32>,
++
+     // pass function pointers so they can be lazily instantiated *after* spawning a thread
+     // (thereby circumventing Send bounds that they might not satisfy)
+     pub ditherer: Option<DithererBuilder>,
+@@ -155,6 +159,7 @@ impl Default for PlayerConfig {
+             ditherer: Some(mk_ditherer::<TriangularDitherer>),
+             position_update_interval: None,
+             local_file_directories: Vec::new(),
++            crossfade_ms: None,
+         }
+     }
+ }
+diff --git a/playback/src/crossfade.rs b/playback/src/crossfade.rs
+new file mode 100644
+index 0000000..6543799
+--- /dev/null
++++ b/playback/src/crossfade.rs
+@@ -0,0 +1,1031 @@
++//! Beat-aligned, tempo-matched crossfades between one track and the next.
++//!
++//! librespot decodes the opening of the preloaded next track while the
++//! current one plays, so the two can be mixed over the outgoing track's last
++//! bars. This module holds the parts that do not need the player: an onset
++//! tracker that estimates the tempo and where the beats fall, the choice of
++//! where the incoming track should enter, the pull of its opening to the
++//! outgoing tempo, and the equal-power gain curves of the mix itself.
++//!
++//! Spotify's own Automix works out its transition recipes in a service and a
++//! native library of its own. This is a local approximation: the tempo comes
++//! from the audio, the fade is placed on a beat, and the opening is only
++//! pulled when the two tempos are close enough that the pitch change is not
++//! heard.
++
++use std::collections::VecDeque;
++
++use crate::{NUM_CHANNELS, SAMPLE_RATE};
++
++/// Frames per onset hop, about 23 ms at the playback rate.
++const HOP: usize = 1024;
++
++/// Hops of onset strength kept, about a minute: a whole track's onsets say
++/// far more about its tempo than its last few bars do.
++const HISTORY: usize = 2_600;
++
++/// The tempo range the tracker looks in.
++const MIN_BPM: f64 = 70.0;
++const MAX_BPM: f64 = 180.0;
++
++/// The furthest the incoming opening is pulled, as a fraction of its own
++/// tempo. A wider pull changes the key enough to be heard.
++pub const MAX_STRETCH: f64 = 0.04;
++
++/// Beat grids weaker than this are not trusted: the mix then falls back to a
++/// plain crossfade.
++pub const MIN_CONFIDENCE: f32 = 0.12;
++
++/// Beats in a bar. Dance music, and the phrases automix plans around, count
++/// in four.
++const BEATS_PER_BAR: usize = 4;
++
++const CHANNELS: usize = NUM_CHANNELS as usize;
++const MS_PER_FRAME: f64 = 1000.0 / SAMPLE_RATE as f64;
++const MS_PER_HOP: f64 = 1000.0 * HOP as f64 / SAMPLE_RATE as f64;
++
++/// Frames of sound in `length_ms`.
++pub fn frames(length_ms: f64) -> usize {
++    (length_ms * SAMPLE_RATE as f64 / 1000.0).max(0.0) as usize
++}
++
++/// Milliseconds of sound in `frames`.
++pub fn ms_of(frames: usize) -> u32 {
++    (frames as f64 * MS_PER_FRAME).round().max(0.0) as u32
++}
++
++/// Where a track's beats fall, from its own opening.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct BeatGrid {
++    /// Milliseconds between beats.
++    pub period_ms: f64,
++    /// Milliseconds into the track of the first beat at or after zero.
++    pub phase_ms: f64,
++    /// Which of every four beats starts the bar: the one the low end
++    /// accents. Beats are counted from `phase_ms`.
++    pub bar_phase: u8,
++    /// How far the beats stand out of the onset envelope. A steady four on
++    /// the floor scores well above noise.
++    pub confidence: f32,
++}
++
++impl BeatGrid {
++    /// Milliseconds in a bar of this tempo.
++    pub fn bar_ms(&self) -> f64 {
++        self.period_ms * BEATS_PER_BAR as f64
++    }
++
++    /// Where `time_ms` falls in bars, counted from the first bar line.
++    fn bar_position(&self, time_ms: f64) -> f64 {
++        ((time_ms - self.phase_ms) / self.period_ms - f64::from(self.bar_phase))
++            / BEATS_PER_BAR as f64
++    }
++
++    fn bar_line(&self, index: f64) -> f64 {
++        self.phase_ms + (f64::from(self.bar_phase) + index * BEATS_PER_BAR as f64) * self.period_ms
++    }
++
++    /// The last bar line at or before `time_ms`.
++    pub fn bar_at_or_before(&self, time_ms: f64) -> f64 {
++        self.bar_line(self.bar_position(time_ms).floor())
++    }
++
++    /// The bar line nearest to `time_ms`.
++    pub fn nearest_bar(&self, time_ms: f64) -> f64 {
++        self.bar_line(self.bar_position(time_ms).round())
++    }
++
++    /// The first bar line at or after `time_ms`.
++    pub fn bar_at_or_after(&self, time_ms: f64) -> f64 {
++        self.bar_line(self.bar_position(time_ms).ceil())
++    }
++}
++
++/// Follows a track's onsets as it plays and says where its beats are.
++pub struct BeatTracker {
++    /// Onset strength per hop, oldest first.
++    onsets: VecDeque<f32>,
++    /// Energy summed over the hop being filled.
++    energy: f64,
++    /// Frames in the hop being filled.
++    filled: usize,
++    /// One-pole low-pass state per channel, for the band a kick lives in.
++    low: [f32; CHANNELS],
++    /// The previous hop's level, for the positive difference that is an
++    /// onset.
++    previous: f32,
++    /// Hops seen since `origin_ms`, so hop indices stay absolute.
++    hops: u64,
++    /// Track time of hop zero.
++    origin_ms: f64,
++    /// Track time of the next frame fed in.
++    cursor_ms: f64,
++}
++
++impl BeatTracker {
++    /// A tracker for a track that starts at `position_ms`.
++    pub fn new(position_ms: u32) -> Self {
++        Self {
++            onsets: VecDeque::with_capacity(HISTORY),
++            energy: 0.0,
++            filled: 0,
++            low: [0.0; CHANNELS],
++            previous: 0.0,
++            hops: 0,
++            origin_ms: position_ms as f64,
++            cursor_ms: position_ms as f64,
++        }
++    }
++
++    /// Drops what was heard and starts again at `position_ms`, after a seek
++    /// or a jump the decoder made on its own.
++    pub fn restart(&mut self, position_ms: u32) {
++        *self = Self::new(position_ms);
++    }
++
++    /// Feeds interleaved stereo samples that start at `position_ms`. A jump
++    /// in position means the sound no longer follows the beats heard so far
++    /// and the estimate starts over.
++    pub fn feed(&mut self, samples: &[f64], position_ms: u32) {
++        if (position_ms as f64 - self.cursor_ms).abs() > 30.0 {
++            self.restart(position_ms);
++        }
++        let coefficient = 1.0 - (-std::f64::consts::TAU * 150.0 / SAMPLE_RATE as f64).exp();
++        let coefficient = coefficient as f32;
++        for frame in samples.chunks_exact(CHANNELS) {
++            let mut energy = 0.0;
++            for (channel, sample) in frame.iter().enumerate() {
++                let low = &mut self.low[channel];
++                *low += coefficient * (*sample as f32 - *low);
++                energy += (*low as f64) * (*low as f64);
++            }
++            self.energy += energy;
++            self.filled += 1;
++            self.cursor_ms += MS_PER_FRAME;
++            if self.filled == HOP {
++                self.finish_hop();
++            }
++        }
++    }
++
++    fn finish_hop(&mut self) {
++        let level = (self.energy / HOP as f64).sqrt() as f32;
++        let onset = (level - self.previous).max(0.0);
++        self.previous = level;
++        self.energy = 0.0;
++        self.filled = 0;
++        self.onsets.push_back(onset);
++        if self.onsets.len() > HISTORY {
++            self.onsets.pop_front();
++        }
++        self.hops += 1;
++    }
++
++    /// The onsets kept, with the track time they were heard at.
++    fn heard(&self) -> impl Iterator<Item = (f64, f32)> + '_ {
++        let first = self.hops.saturating_sub(self.onsets.len() as u64) as f64;
++        self.onsets
++            .iter()
++            .enumerate()
++            .map(move |(index, strength)| {
++                (
++                    self.origin_ms + (first + index as f64) * MS_PER_HOP,
++                    *strength,
++                )
++            })
++    }
++
++    /// The tempo and the beat positions, when the sound has a steady beat.
++    pub fn estimate(&self) -> Option<BeatGrid> {
++        let length = self.onsets.len();
++        // Three and a half seconds of onsets, so a bar of slow music is seen
++        // at least once.
++        if length < frames_of_hops(3500.0) {
++            return None;
++        }
++        let strengths: Vec<f32> = self.onsets.iter().copied().collect();
++        let mean = strengths.iter().sum::<f32>() / length as f32;
++        if mean <= f32::EPSILON {
++            return None;
++        }
++        let centred: Vec<f32> = strengths.iter().map(|strength| strength - mean).collect();
++        let variance = centred.iter().map(|value| value * value).sum::<f32>() / length as f32;
++        if variance <= f32::EPSILON {
++            return None;
++        }
++
++        let min_lag = (60_000.0 / MAX_BPM / MS_PER_HOP).floor().max(2.0) as usize;
++        let max_lag = (60_000.0 / MIN_BPM / MS_PER_HOP).ceil() as usize;
++        let mut correlations = vec![0.0f32; max_lag + 1];
++        for lag in min_lag..=max_lag {
++            let mut sum = 0.0;
++            for index in lag..length {
++                sum += centred[index] * centred[index - lag];
++            }
++            correlations[lag] = sum / (length - lag) as f32 / variance;
++        }
++
++        let mut best = min_lag;
++        for lag in min_lag..=max_lag {
++            if correlations[lag] > correlations[best] {
++                best = lag;
++            }
++        }
++        // Half-time tracks correlate just as well at twice the period, and
++        // their beats still fall on the shorter one.
++        let half = best / 2;
++        if half >= min_lag && correlations[half] >= correlations[best] * 0.88 {
++            best = half;
++        }
++        let confidence = correlations[best];
++        if confidence < MIN_CONFIDENCE {
++            return None;
++        }
++
++        // A lag is a whole number of hops, which at 98 BPM is 1.4 % away
++        // from the tempo; the peak's neighbours say where it really is.
++        let refined = if best > min_lag && best < max_lag {
++            let (before, peak, after) = (
++                correlations[best - 1] as f64,
++                correlations[best] as f64,
++                correlations[best + 1] as f64,
++            );
++            let curvature = before - 2.0 * peak + after;
++            if curvature < 0.0 {
++                best as f64 + 0.5 * (before - after) / curvature
++            } else {
++                best as f64
++            }
++        } else {
++            best as f64
++        };
++        // The period is measured again against the onsets themselves: the
++        // period whose beats the onsets gather around, and how tightly they
++        // gather. A whole number of hops is 1 % off at the slow end of the
++        // range, which over a few bars is a beat out of place.
++        let heard: Vec<(f64, f64)> = self
++            .heard()
++            .map(|(time, strength)| (time, f64::from(strength)))
++            .collect();
++        let total: f64 = heard.iter().map(|(_, strength)| strength).sum();
++        if total <= 0.0 {
++            return None;
++        }
++        let mut period_ms = refined * MS_PER_HOP;
++        let mut side = 0.0;
++        let mut front = 0.0;
++        let mut closeness = f64::MIN;
++        for step in -30..=30 {
++            let hops = refined + f64::from(step) * 0.05;
++            if !(min_lag as f64..=max_lag as f64).contains(&hops) {
++                continue;
++            }
++            let candidate = hops * MS_PER_HOP;
++            let (mut sine, mut cosine) = (0.0, 0.0);
++            for (time, strength) in &heard {
++                let angle = std::f64::consts::TAU * time / candidate;
++                sine += strength * angle.sin();
++                cosine += strength * angle.cos();
++            }
++            let coherence = (sine * sine + cosine * cosine).sqrt() / total;
++            if coherence > closeness {
++                closeness = coherence;
++                period_ms = candidate;
++                side = sine;
++                front = cosine;
++            }
++        }
++        let phase_ms =
++            (period_ms * side.atan2(front) / std::f64::consts::TAU).rem_euclid(period_ms);
++
++        // The bar's first beat is the one the low end hits hardest. Beats are
++        // numbered from `phase_ms`, so the answer lines up with the bar lines
++        // the mix asks for later.
++        let mut strength_of = [0.0f64; BEATS_PER_BAR];
++        let mut beats_of = [0u32; BEATS_PER_BAR];
++        for (time, strength) in &heard {
++            let beat = ((time - phase_ms) / period_ms).round() as i64;
++            let within = beat.rem_euclid(BEATS_PER_BAR as i64) as usize;
++            strength_of[within] += strength;
++            beats_of[within] += 1;
++        }
++        let bar_phase = (0..BEATS_PER_BAR)
++            .max_by(|left, right| {
++                let mean = |index: usize| strength_of[index] / f64::from(beats_of[index].max(1));
++                mean(*left).total_cmp(&mean(*right))
++            })
++            .unwrap_or(0) as u8;
++
++        Some(BeatGrid {
++            period_ms,
++            phase_ms,
++            bar_phase,
++            confidence,
++        })
++    }
++}
++
++fn frames_of_hops(milliseconds: f64) -> usize {
++    (milliseconds / MS_PER_HOP).ceil() as usize
++}
++
++/// The level of a run of frames, for finding where an opening gets going.
++fn energy_of(samples: &[f64], from: usize, to: usize) -> f64 {
++    let to = to.min(samples.len() / CHANNELS);
++    if to <= from {
++        return 0.0;
++    }
++    let mut sum = 0.0;
++    for frame in from..to {
++        for channel in 0..CHANNELS {
++            let sample = samples[frame * CHANNELS + channel];
++            sum += sample * sample;
++        }
++    }
++    (sum / ((to - from) * CHANNELS) as f64).sqrt()
++}
++
++/// The bar where a quiet opening gives way to the song: the biggest rise
++/// into a bar that is loud, which is the drop an intro leads to. Without one
++/// the opening is already going, or nothing stands out.
++fn drop_bar(decoded: &[f64], available: usize, grid: &BeatGrid) -> Option<usize> {
++    let bar_frames = frames(grid.bar_ms());
++    if bar_frames < 512 || available < bar_frames * 2 {
++        return None;
++    }
++    let first = frames(grid.bar_at_or_after(0.0));
++    if first >= available {
++        return None;
++    }
++    let mut starts = Vec::new();
++    let mut start = first;
++    while starts.len() < 4 && start + bar_frames <= available {
++        starts.push(start);
++        start += bar_frames;
++    }
++    if starts.len() < 2 {
++        return None;
++    }
++    let levels: Vec<f64> = (0..starts.len())
++        .map(|index| {
++            let end = starts
++                .get(index + 1)
++                .copied()
++                .unwrap_or(start + bar_frames)
++                .min(available);
++            energy_of(decoded, starts[index], end)
++        })
++        .collect();
++    let loudest = levels.iter().copied().fold(0.0, f64::max);
++    if loudest <= f64::EPSILON {
++        return None;
++    }
++    let mut best: Option<(usize, f64)> = None;
++    for index in 1..levels.len() {
++        let rise = levels[index] - levels[index - 1];
++        if levels[index] >= loudest * 0.6 && best.is_none_or(|(_, top)| rise > top) {
++            best = Some((index, rise));
++        }
++    }
++    best.filter(|(_, rise)| *rise > loudest * 0.05)
++        .map(|(index, _)| starts[index])
++}
++
++/// Where the incoming track should enter the mix.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct Entry {
++    /// Frames into the decoded opening where the mix begins.
++    pub at: usize,
++    /// The opening's beats and bar lines, when it has them.
++    pub grid: Option<BeatGrid>,
++}
++
++/// Finds the incoming track's entry: its first strong attack in the opening,
++/// so the mix starts on a beat rather than in the middle of a phrase, and the
++/// tempo that attack belongs to.
++pub fn opening_entry(decoded: &[f64], available: usize) -> Entry {
++    let available = available.min(decoded.len() / CHANNELS);
++    if available == 0 {
++        return Entry::default();
++    }
++    let mut tracker = BeatTracker::new(0);
++    tracker.feed(&decoded[..available * CHANNELS], 0);
++    let grid = tracker
++        .estimate()
++        .filter(|grid| grid.confidence >= MIN_CONFIDENCE);
++
++    let limit = ms_of(available.min(frames(2500.0)));
++    let peak = tracker.onsets.iter().copied().fold(0.0f32, f32::max);
++    let mut entry_ms = None;
++    if peak > f32::EPSILON {
++        for (time, strength) in tracker.heard() {
++            if time < 120.0 {
++                continue;
++            }
++            if time > limit as f64 {
++                break;
++            }
++            if strength >= peak * 0.45 {
++                // Keep the few milliseconds that carry the attack.
++                entry_ms = Some((time - 12.0).max(0.0));
++                break;
++            }
++        }
++    }
++
++    // Enter where a quiet intro gives way to the song, else on the bar line
++    // nearest the attack, so the incoming phrase starts where the outgoing
++    // one ends.
++    let at_ms = match grid {
++        Some(grid) => {
++            let attack = entry_ms.map(|attack| {
++                let before = grid.bar_at_or_before(attack);
++                // The bar the attack is on, unless it is only just past the
++                // line; otherwise the next one, so the opening does not begin
++                // in the silence before the attack.
++                if attack - before <= 250.0 {
++                    before
++                } else {
++                    before + grid.bar_ms()
++                }
++            });
++            // A drop later than this is too much of the song to skip; the
++            // opening plays through instead.
++            let drop = drop_bar(decoded, available, &grid)
++                .map(|drop| ms_of(drop) as f64)
++                .filter(|drop| *drop <= 4_000.0);
++            drop.or(attack).unwrap_or(0.0).clamp(0.0, 4_000.0)
++        }
++        None => entry_ms.unwrap_or(0.0),
++    };
++    Entry {
++        at: frames(at_ms).min(available.saturating_sub(1)),
++        grid,
++    }
++}
++
++/// `samples` from `from`, played `out_frames` long, with `ratio` content
++/// frames per output frame. A ratio of one copies the opening; anything else
++/// pulls it to another tempo, which also moves its pitch.
++pub fn stretch(samples: &[f64], from: usize, out_frames: usize, ratio: f64) -> Vec<f64> {
++    let mut out = Vec::with_capacity(out_frames * CHANNELS);
++    let start = from * CHANNELS;
++    for frame in 0..out_frames {
++        let position = frame as f64 * ratio;
++        let index = position.floor() as usize;
++        let fraction = position - index as f64;
++        for channel in 0..CHANNELS {
++            let base = start + index * CHANNELS + channel;
++            let first = samples.get(base).copied().unwrap_or(0.0);
++            let second = samples.get(base + CHANNELS).copied().unwrap_or(first);
++            out.push(first + (second - first) * fraction);
++        }
++    }
++    out
++}
++
++/// Cuts the incoming track's low end as the mix begins and brings it back as
++/// the outgoing one leaves: the bass swap a DJ makes so two kicks and two
++/// basslines do not pile up. Only the opening is touched; by its end the low
++/// end is whole again.
++pub fn bass_swap(samples: &mut [f64], frames: usize) {
++    let frames = frames.min(samples.len() / CHANNELS);
++    if frames < 2 {
++        return;
++    }
++    // A first-order high pass whose corner slides down from the kick's band
++    // to open: steep enough to take the low end out, with no crossover
++    // subtraction to leave a residue behind.
++    let mut previous_in = [0.0f64; CHANNELS];
++    let mut previous_out = [0.0f64; CHANNELS];
++    let mut coefficient = 0.0;
++    for frame in 0..frames {
++        if frame % 256 == 0 {
++            let through = frame as f64 / frames as f64;
++            let corner = if through < 0.35 {
++                500.0
++            } else if through < 0.85 {
++                // Slide from 500 Hz to 5 Hz across the middle of the mix.
++                500.0 * (5.0f64 / 500.0).powf((through - 0.35) / 0.5)
++            } else {
++                5.0
++            };
++            coefficient = (-std::f64::consts::TAU * corner / SAMPLE_RATE as f64).exp();
++        }
++        for channel in 0..CHANNELS {
++            let sample = samples[frame * CHANNELS + channel];
++            let filtered = coefficient * (previous_out[channel] + sample - previous_in[channel]);
++            previous_in[channel] = sample;
++            previous_out[channel] = filtered;
++            samples[frame * CHANNELS + channel] = filtered;
++        }
++    }
++}
++
++/// Pulls the low end out of the outgoing song as it leaves: the filter a DJ
++/// sweeps across the last bars, so the two songs do not share the bottom of
++/// the spectrum at full level while they overlap.
++#[derive(Clone, Copy, Debug)]
++pub struct Sweep {
++    previous_in: [f64; CHANNELS],
++    previous_out: [f64; CHANNELS],
++    coefficient: f64,
++}
++
++impl Default for Sweep {
++    fn default() -> Self {
++        Self {
++            previous_in: [0.0; CHANNELS],
++            previous_out: [0.0; CHANNELS],
++            coefficient: (-std::f64::consts::TAU * 20.0 / SAMPLE_RATE as f64).exp(),
++        }
++    }
++}
++
++impl Sweep {
++    /// Filters `data`, the outgoing song's frames from `played` of `total`.
++    /// The corner stays out of the way until the mix is a third through, then
++    /// climbs to 1.5 kHz, leaving the sound thin as the song goes.
++    pub fn process(&mut self, data: &mut [f64], played: usize, total: usize) {
++        if total == 0 {
++            return;
++        }
++        for (index, frame) in data.chunks_exact_mut(CHANNELS).enumerate() {
++            if (played + index) % 256 == 0 || index == 0 {
++                let through = (played + index) as f64 / total as f64;
++                let corner = if through < 0.35 {
++                    20.0
++                } else if through < 0.9 {
++                    20.0 * (1_500.0f64 / 20.0).powf((through - 0.35) / 0.55)
++                } else {
++                    1_500.0
++                };
++                self.coefficient = (-std::f64::consts::TAU * corner / SAMPLE_RATE as f64).exp();
++            }
++            for (channel, sample) in frame.iter_mut().enumerate() {
++                let input = *sample;
++                let filtered = self.coefficient
++                    * (self.previous_out[channel] + input - self.previous_in[channel]);
++                self.previous_in[channel] = input;
++                self.previous_out[channel] = filtered;
++                *sample = filtered;
++            }
++        }
++    }
++}
++
++/// The equal-power gains at `t` through a fade: `(incoming, outgoing)`.
++/// Their squares sum to one, so the mix neither dips nor swells.
++pub fn gains(t: f64) -> (f64, f64) {
++    let angle = t.clamp(0.0, 1.0) * std::f64::consts::FRAC_PI_2;
++    angle.sin_cos()
++}
++
++/// Mixes `opening` over `outgoing` from `played` frames in, and returns the
++/// frames mixed. `gain` carries the incoming track's own normalisation.
++pub fn mix(
++    outgoing: &mut [f64],
++    opening: &[f64],
++    played: usize,
++    frames: usize,
++    gain: f64,
++) -> usize {
++    if frames == 0 {
++        return 0;
++    }
++    let available = (outgoing.len() / CHANNELS).min(frames.saturating_sub(played));
++    for frame in 0..available {
++        let at = played + frame;
++        let (incoming, out) = gains(at as f64 / frames as f64);
++        for channel in 0..CHANNELS {
++            let sample = &mut outgoing[frame * CHANNELS + channel];
++            let head = opening.get(at * CHANNELS + channel).copied().unwrap_or(0.0);
++            *sample = *sample * out + head * incoming * gain;
++        }
++    }
++    available
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// Clicks of `bpm` over `seconds`, at the playback rate.
++    fn clicks(bpm: f64, seconds: f64) -> Vec<f64> {
++        let rate = SAMPLE_RATE as f64;
++        let mut samples = vec![0.0; (seconds * rate) as usize * CHANNELS];
++        let period = rate * 60.0 / bpm;
++        let mut click = 0.0;
++        while click < seconds * rate {
++            let start = click as usize;
++            for offset in 0..(rate * 0.05) as usize {
++                let at = start + offset;
++                if at >= samples.len() / CHANNELS {
++                    break;
++                }
++                let envelope = (-(offset as f64) / (rate * 0.012)).exp();
++                let value =
++                    (offset as f64 / rate * 80.0 * std::f64::consts::TAU).sin() * envelope * 0.8;
++                samples[at * CHANNELS] = value;
++                samples[at * CHANNELS + 1] = value;
++            }
++            click += period;
++        }
++        samples
++    }
++
++    #[test]
++    fn the_fade_keeps_the_power_of_the_two_songs_at_one() {
++        for step in 0..=100 {
++            let (incoming, outgoing) = gains(step as f64 / 100.0);
++            let power = incoming * incoming + outgoing * outgoing;
++            assert!((power - 1.0).abs() < 1e-9, "{power} at {step}");
++        }
++        assert_eq!(gains(0.0), (0.0, 1.0));
++        let (incoming, outgoing) = gains(1.0);
++        assert!(incoming > 0.999 && outgoing.abs() < 1e-9);
++    }
++
++    #[test]
++    fn the_mix_fades_the_song_out_while_the_next_one_comes_in() {
++        let mut outgoing = vec![1.0f64; 100 * CHANNELS];
++        let opening = vec![1.0f64; 100 * CHANNELS];
++        let mixed = mix(&mut outgoing, &opening, 0, 100, 1.0);
++        assert_eq!(mixed, 100);
++        assert!(
++            (outgoing[0] - 1.0).abs() < 1e-9,
++            "the first frame is the old song"
++        );
++        let last = 99 * CHANNELS;
++        assert!(
++            (outgoing[last] - 1.0).abs() < 0.02,
++            "the last is nearly the new one"
++        );
++        // Halfway the two are equal, at equal power.
++        let middle = 50 * CHANNELS;
++        assert!((outgoing[middle] - std::f64::consts::SQRT_2).abs() < 1e-3);
++        // No frame is louder than either song alone by more than the sum.
++        assert!(
++            outgoing
++                .iter()
++                .all(|sample| *sample <= std::f64::consts::SQRT_2 + 1e-9)
++        );
++        assert!(outgoing.chunks(CHANNELS).all(|frame| frame[0] == frame[1]));
++    }
++
++    #[test]
++    fn the_mix_continues_where_the_last_packet_stopped() {
++        let mut outgoing = vec![1.0f64; 20 * CHANNELS];
++        let opening = vec![1.0f64; 100 * CHANNELS];
++        assert_eq!(mix(&mut outgoing, &opening, 40, 100, 1.0), 20);
++        let (incoming, out) = gains(0.4);
++        assert!((outgoing[0] - (out + incoming)).abs() < 1e-9);
++    }
++
++    #[test]
++    fn the_mix_never_reads_past_the_opening_or_the_outgoing_packet() {
++        let mut outgoing = vec![1.0f64; 10 * CHANNELS];
++        let opening = vec![1.0f64; 100 * CHANNELS];
++        assert_eq!(mix(&mut outgoing, &opening, 95, 100, 1.0), 5);
++        let mut outgoing = vec![1.0f64; 10 * CHANNELS];
++        assert_eq!(mix(&mut outgoing, &opening, 100, 100, 1.0), 0);
++        assert_eq!(mix(&mut outgoing, &opening, 0, 0, 1.0), 0);
++    }
++
++    #[test]
++    fn the_incoming_normalisation_is_applied_to_its_own_samples_only() {
++        let mut outgoing = vec![1.0f64; CHANNELS];
++        let opening = vec![1.0f64; 2 * CHANNELS];
++        mix(&mut outgoing, &opening, 1, 2, 0.25);
++        let (incoming, out) = gains(0.5);
++        assert!((outgoing[0] - (out + incoming * 0.25)).abs() < 1e-9);
++    }
++
++    #[test]
++    fn a_ratio_of_one_copies_the_opening() {
++        let opening: Vec<f64> = (0..40).map(|sample| sample as f64 / 40.0).collect();
++        let copied = stretch(&opening, 0, 20, 1.0);
++        assert_eq!(copied, opening);
++    }
++
++    #[test]
++    fn pulling_the_opening_to_another_tempo_walks_it_with_interpolation() {
++        let opening: Vec<f64> = (0..40).map(|sample| sample as f64 / 10.0).collect();
++        let pulled = stretch(&opening, 0, 3, 1.5);
++        // Frames 0, 1.5 and 3 of the opening, both channels: frame 1 is
++        // [0.2, 0.3] and frame 2 is [0.4, 0.5], so 1.5 is between them.
++        for (pulled, expected) in pulled.iter().zip([0.0, 0.1, 0.3, 0.4, 0.6, 0.7]) {
++            assert!(
++                (pulled - expected).abs() < 1e-9,
++                "{pulled} is not {expected}"
++            );
++        }
++        assert_eq!(stretch(&opening, 2, 2, 1.0)[0], opening[4]);
++    }
++
++    #[test]
++    fn the_tracker_finds_the_beats_of_a_steady_track() {
++        for bpm in [98.0, 120.0, 128.0, 174.0] {
++            let samples = clicks(bpm, 8.0);
++            let mut tracker = BeatTracker::new(0);
++            tracker.feed(&samples, 0);
++            let grid = tracker
++                .estimate()
++                .unwrap_or_else(|| panic!("no beat at {bpm}"));
++            // Within half a per cent: over eight beats that is under 50 ms.
++            let tolerance = 60_000.0 / bpm * 0.005;
++            assert!(
++                (grid.period_ms - 60_000.0 / bpm).abs() < tolerance,
++                "{bpm}: {} ms a beat",
++                grid.period_ms
++            );
++            assert!(
++                grid.confidence >= MIN_CONFIDENCE,
++                "{bpm}: {}",
++                grid.confidence
++            );
++            // A click sits on the first beat, give or take a hop.
++            let first = grid.phase_ms;
++            let near_click = first.min(grid.period_ms - first);
++            assert!(near_click < 30.0, "{bpm}: first beat at {first}");
++        }
++    }
++
++    #[test]
++    fn a_half_time_beat_is_counted_as_its_faster_beats() {
++        // A kick every two beats, with a quieter hat in between.
++        let mut samples = clicks(120.0, 8.0);
++        let rate = SAMPLE_RATE as f64;
++        let period = rate * 0.5;
++        let mut at = period / 2.0;
++        while at < 8.0 * rate {
++            for offset in 0..(rate * 0.02) as usize {
++                let index = (at as usize + offset) * CHANNELS;
++                if index >= samples.len() {
++                    break;
++                }
++                let value = (offset as f64 / rate * 180.0 * std::f64::consts::TAU).sin() * 0.2;
++                samples[index] += value;
++                samples[index + 1] += value;
++            }
++            at += period;
++        }
++        let mut tracker = BeatTracker::new(0);
++        tracker.feed(&samples, 0);
++        let grid = tracker.estimate().expect("a beat");
++        assert!(
++            (grid.period_ms - 500.0).abs() < 30.0,
++            "{} ms a beat, not 1000",
++            grid.period_ms
++        );
++    }
++
++    #[test]
++    fn silence_and_noise_do_not_claim_a_beat() {
++        for samples in [
++            vec![0.0; SAMPLE_RATE as usize * 6 * CHANNELS],
++            (0..SAMPLE_RATE as usize * 6 * CHANNELS)
++                .map(|index| ((index * 7919 % 1000) as f64 / 500.0 - 1.0) * 0.3)
++                .collect(),
++        ] {
++            let mut tracker = BeatTracker::new(0);
++            tracker.feed(&samples, 0);
++            assert!(
++                tracker
++                    .estimate()
++                    .is_none_or(|grid| grid.confidence < MIN_CONFIDENCE)
++            );
++        }
++    }
++
++    #[test]
++    fn the_opening_enters_on_its_first_strong_attack() {
++        let mut samples = vec![0.0; SAMPLE_RATE as usize * 8 * CHANNELS];
++        for start in [0.6f64, 1.1, 1.6, 2.1] {
++            let at = (start * SAMPLE_RATE as f64) as usize;
++            for offset in 0..2000 {
++                let value = (offset as f64 / SAMPLE_RATE as f64 * 80.0 * std::f64::consts::TAU)
++                    .sin()
++                    * (-(offset as f64) / 400.0).exp();
++                samples[(at + offset) * CHANNELS] = value;
++                samples[(at + offset) * CHANNELS + 1] = value;
++            }
++        }
++        let entry = opening_entry(&samples, samples.len() / CHANNELS);
++        let at_ms = entry.at as f64 * MS_PER_FRAME;
++        let grid = entry.grid.expect("a beat");
++        let beat = ((at_ms - grid.phase_ms) / grid.period_ms).round() as i64;
++        assert_eq!(beat.rem_euclid(4) as u8, grid.bar_phase);
++        assert!(at_ms >= 300.0 && at_ms <= 3_000.0, "entered at {at_ms} ms");
++    }
++
++    #[test]
++    fn an_opening_without_an_attack_enters_at_its_start() {
++        let samples = vec![0.0; SAMPLE_RATE as usize * 2 * CHANNELS];
++        assert_eq!(opening_entry(&samples, samples.len() / CHANNELS).at, 0);
++        assert_eq!(opening_entry(&[], 0), Entry::default());
++    }
++
++    /// Clicks every beat, the first of each bar louder, as a four on the
++    /// floor with an accented kick sounds.
++    fn bars(bpm: f64, seconds: f64) -> Vec<f64> {
++        let rate = SAMPLE_RATE as f64;
++        let mut samples = vec![0.0; (seconds * rate) as usize * CHANNELS];
++        let period = rate * 60.0 / bpm;
++        let mut click = 0.0;
++        let mut number = 0;
++        while click < seconds * rate {
++            let strength = if number % 4 == 0 { 0.9 } else { 0.3 };
++            for offset in 0..(rate * 0.05) as usize {
++                let at = click as usize + offset;
++                if at >= samples.len() / CHANNELS {
++                    break;
++                }
++                let envelope = (-(offset as f64) / (rate * 0.012)).exp();
++                let value = (offset as f64 / rate * 80.0 * std::f64::consts::TAU).sin()
++                    * envelope
++                    * strength;
++                samples[at * CHANNELS] = value;
++                samples[at * CHANNELS + 1] = value;
++            }
++            click += period;
++            number += 1;
++        }
++        samples
++    }
++
++    #[test]
++    fn the_tracker_finds_the_bar_line_the_kick_accents() {
++        let mut tracker = BeatTracker::new(0);
++        tracker.feed(&bars(120.0, 8.0), 0);
++        let grid = tracker.estimate().expect("a beat");
++        assert!((grid.period_ms - 500.0).abs() < 6.0);
++        assert!((grid.bar_ms() - 2000.0).abs() < 24.0);
++        // The bar line lands on one of the accented kicks.
++        let line = grid.bar_at_or_before(4_500.0);
++        let beat = ((line - grid.phase_ms) / grid.period_ms).round() as i64;
++        assert_eq!(beat.rem_euclid(4) as u8, grid.bar_phase);
++        let nearest = (line / 2_000.0).round() * 2_000.0;
++        assert!(
++            (line - nearest).abs() < 60.0,
++            "bar line at {line} ms, accents at 0, 2000, 4000"
++        );
++    }
++
++    #[test]
++    fn bar_lines_land_on_the_bar_and_the_nearest_one_wins() {
++        let grid = BeatGrid {
++            period_ms: 500.0,
++            phase_ms: 20.0,
++            bar_phase: 1,
++            confidence: 0.5,
++        };
++        // Beats at 20, 520, 1020, 1520; the bar starts on the second of each
++        // four, so at 520, 2520, 4520.
++        assert!((grid.bar_at_or_before(2_600.0) - 2_520.0).abs() < 1e-9);
++        assert!((grid.bar_at_or_before(2_400.0) - 520.0).abs() < 1e-9);
++        assert!((grid.nearest_bar(2_100.0) - 2_520.0).abs() < 1e-9);
++        assert!((grid.nearest_bar(2_300.0) - 2_520.0).abs() < 1e-9);
++        assert!((grid.nearest_bar(5_000.0) - 4_520.0).abs() < 1e-9);
++        assert!((grid.bar_ms() - 2_000.0).abs() < 1e-9);
++    }
++
++    #[test]
++    fn the_incoming_opening_enters_on_a_bar_line() {
++        let samples = bars(120.0, 6.0);
++        let entry = opening_entry(&samples, samples.len() / CHANNELS);
++        let grid = entry.grid.expect("a beat");
++        let at_ms = entry.at as f64 * MS_PER_FRAME;
++        let beat = ((at_ms - grid.phase_ms) / grid.period_ms).round() as i64;
++        assert_eq!(beat.rem_euclid(4) as u8, grid.bar_phase);
++    }
++
++    #[test]
++    fn the_bass_swap_holds_the_low_end_back_and_keeps_the_rest() {
++        let frames = SAMPLE_RATE as usize;
++        let tone = |hertz: f64| -> Vec<f64> {
++            let mut samples = Vec::with_capacity(frames * CHANNELS);
++            for frame in 0..frames {
++                let value =
++                    (frame as f64 / SAMPLE_RATE as f64 * hertz * std::f64::consts::TAU).sin();
++                samples.push(value);
++                samples.push(value);
++            }
++            samples
++        };
++        let rms = |samples: &[f64], from: usize, to: usize| -> f64 {
++            let mut sum = 0.0;
++            let mut count = 0;
++            for frame in from..to {
++                sum += samples[frame * CHANNELS] * samples[frame * CHANNELS];
++                count += 1;
++            }
++            (sum / count as f64).sqrt()
++        };
++
++        // The kick band is held back at the start and whole again by the end.
++        let mut low = tone(60.0);
++        let before = low.clone();
++        bass_swap(&mut low, frames);
++        let start = rms(&low, frames / 10, frames / 3) / rms(&before, frames / 10, frames / 3);
++        let end = rms(&low, frames * 9 / 10, frames) / rms(&before, frames * 9 / 10, frames);
++        assert!(start < 0.25, "low end at the start: {start}");
++        // The cutoff reaches open, so the low end comes back whole.
++        assert!((end - 1.0).abs() < 0.1, "low end at the end: {end}");
++
++        // Everything above the kick passes through untouched.
++        let mut high = tone(5_000.0);
++        let reference = high.clone();
++        bass_swap(&mut high, frames);
++        let ratio = rms(&high, frames / 10, frames / 3) / rms(&reference, frames / 10, frames / 3);
++        assert!((ratio - 1.0).abs() < 0.05, "high end: {ratio}");
++    }
++
++    #[test]
++    fn the_opening_enters_where_the_intro_gives_way_to_the_drop() {
++        let rate = SAMPLE_RATE as f64;
++        let period = rate * 0.5;
++        let seconds = 12.0;
++        let mut samples = vec![0.0; (seconds * rate) as usize * CHANNELS];
++        let mut click = 0.0;
++        let mut number = 0;
++        while click < seconds * rate {
++            let bar = number / 4;
++            // The bar's first beat carries the accent, as a kick on the one.
++            let accent = if number % 4 == 0 { 0.8 } else { 0.35 };
++            let strength = if bar < 2 { accent * 0.06 } else { accent };
++            for offset in 0..(rate * 0.05) as usize {
++                let at = click as usize + offset;
++                if at >= samples.len() / CHANNELS {
++                    break;
++                }
++                let envelope = (-(offset as f64) / (rate * 0.012)).exp();
++                let value = (offset as f64 / rate * 80.0 * std::f64::consts::TAU).sin()
++                    * envelope
++                    * strength;
++                samples[at * CHANNELS] = value;
++                samples[at * CHANNELS + 1] = value;
++            }
++            click += period;
++            number += 1;
++        }
++        let entry = opening_entry(&samples, samples.len() / CHANNELS);
++        let at_ms = entry.at as f64 * MS_PER_FRAME;
++        assert!(
++            (3_800.0..4_300.0).contains(&at_ms),
++            "entered at {at_ms} ms, the drop is at 4000"
++        );
++    }
++
++    #[test]
++    fn the_sweep_thins_the_outgoing_low_end_as_it_leaves() {
++        let frames = SAMPLE_RATE as usize;
++        let tone = |hertz: f64| -> Vec<f64> {
++            let mut samples = Vec::with_capacity(frames * CHANNELS);
++            for frame in 0..frames {
++                let value =
++                    (frame as f64 / SAMPLE_RATE as f64 * hertz * std::f64::consts::TAU).sin();
++                samples.push(value);
++                samples.push(value);
++            }
++            samples
++        };
++        let rms = |samples: &[f64], from: usize, to: usize| -> f64 {
++            let mut sum = 0.0;
++            let mut count = 0;
++            for frame in from..to {
++                sum += samples[frame * CHANNELS] * samples[frame * CHANNELS];
++                count += 1;
++            }
++            (sum / count as f64).sqrt()
++        };
++
++        // At the start the filter is out of the way.
++        let mut early = tone(60.0);
++        let reference = early.clone();
++        Sweep::default().process(&mut early, 0, frames);
++        let ratio = rms(&early, frames / 10, frames / 3) / rms(&reference, frames / 10, frames / 3);
++        assert!((ratio - 1.0).abs() < 0.1, "low end at the start: {ratio}");
++
++        // At the end the low end is gone and the top is still there.
++        let mut late = tone(60.0);
++        let reference = late.clone();
++        Sweep::default().process(&mut late, frames * 9 / 10, frames);
++        let low = rms(&late, frames / 10, frames / 3) / rms(&reference, frames / 10, frames / 3);
++        assert!(low < 0.2, "low end at the end: {low}");
++        let mut high = tone(5_000.0);
++        let reference = high.clone();
++        Sweep::default().process(&mut high, frames * 9 / 10, frames);
++        let high = rms(&high, frames / 10, frames / 3) / rms(&reference, frames / 10, frames / 3);
++        // The one-pole leaves the top nearly whole (a decibel or so down).
++        assert!(high > 0.8, "high end at the end: {high}");
++    }
++
++    #[test]
++    fn frames_and_milliseconds_round_trip() {
++        for ms in [0u32, 1, 13, 500, 6_000, 12_000] {
++            let back = ms_of(frames(ms as f64));
++            assert!(back.abs_diff(ms) <= 1, "{ms} became {back}");
++        }
++    }
++}
+diff --git a/playback/src/lib.rs b/playback/src/lib.rs
+index f7d1556..a32130e 100644
+--- a/playback/src/lib.rs
++++ b/playback/src/lib.rs
+@@ -8,6 +8,7 @@ use librespot_metadata as metadata;
+ pub mod audio_backend;
+ pub mod config;
+ pub mod convert;
++mod crossfade;
+ pub mod decoder;
+ pub mod dither;
+ pub mod local_file;
+diff --git a/playback/src/player.rs b/playback/src/player.rs
+index 5ce7bd1..66667c7 100644
+--- a/playback/src/player.rs
++++ b/playback/src/player.rs
+@@ -48,10 +48,19 @@ use crate::SAMPLES_PER_SECOND;
+ 
+ const PRELOAD_NEXT_TRACK_BEFORE_END_DURATION_MS: u32 = 30000;
+ 
++/// How long before a mix its incoming opening is decoded: enough to read a
++/// few beats and to have the whole mix ready when its beat comes.
++const CROSSFADE_PREPARE_AHEAD_MS: u32 = 3_500;
++
++/// The shortest and longest mix a beat can ask for.
++const CROSSFADE_MIN_MS: u32 = 1_500;
++const CROSSFADE_MAX_MS: u32 = 14_000;
++
+ /// How much of an upcoming track's file [`Player::prefetch`] downloads ahead:
+-/// about three seconds of audio at 320 kbit/s, enough to start playing while
+-/// the rest of the file streams in.
+-const PREFETCH_HEAD_BYTES: usize = 128 * 1024;
++/// about nineteen seconds of audio at 320 kbit/s, enough to start playing and
++/// to decode a crossfade's opening, beats and all, while the rest of the file
++/// streams in.
++const PREFETCH_HEAD_BYTES: usize = 768 * 1024;
+ 
+ /// The most upcoming tracks [`Player::prefetch`] holds at once.
+ const PREFETCH_MAX_TRACKS: usize = 3;
+@@ -95,6 +104,9 @@ struct PlayerInternal {
+ 
+     state: PlayerState,
+     preload: PlayerPreload,
++    crossfade: Crossfade,
++    /// Where the beats of the track that plays fall, from its own audio.
++    beats: crate::crossfade::BeatTracker,
+     sink: Box<dyn Sink>,
+     sink_status: SinkStatus,
+     sink_event_callback: Option<SinkEventCallback>,
+@@ -188,6 +200,7 @@ enum PlayerCommand {
+     Pause,
+     Stop,
+     Seek(u32),
++    SetCrossfade(Option<u32>),
+     SetSession(Session),
+     AddEventSender(mpsc::UnboundedSender<PlayerEvent>),
+     SetSinkEventCallback(Option<SinkEventCallback>),
+@@ -595,6 +608,8 @@ impl Player {
+ 
+                 state: PlayerState::Stopped,
+                 preload: PlayerPreload::None,
++                crossfade: Crossfade::default(),
++                beats: crate::crossfade::BeatTracker::new(0),
+                 sink: sink_builder(),
+                 sink_status: SinkStatus::Closed,
+                 sink_event_callback: None,
+@@ -683,6 +698,11 @@ impl Player {
+         self.command(PlayerCommand::Stop)
+     }
+ 
++    /// Sets the length of the crossfade into the next track, or turns it off.
++    pub fn set_crossfade(&self, length_ms: Option<u32>) {
++        self.command(PlayerCommand::SetCrossfade(length_ms))
++    }
++
+     pub fn seek(&self, position_ms: u32) {
+         self.command(PlayerCommand::Seek(position_ms));
+     }
+@@ -805,6 +825,51 @@ struct PlayerLoadedTrackData {
+     is_explicit: bool,
+ }
+ 
++/// A mix between the track that is ending and the track that follows.
++#[derive(Default)]
++struct Crossfade {
++    /// The incoming track the opening belongs to.
++    track: Option<SpotifyUri>,
++    /// Its opening, decoded before the outgoing track ends.
++    opening: Option<Opening>,
++    /// Frames of the opening already played.
++    played: usize,
++    /// Whether the two tracks are being mixed now.
++    active: bool,
++    /// The opening has been heard in full. The outgoing track stays silent
++    /// until it ends, so its sound never comes back at full level after the
++    /// mix has finished.
++    finished: bool,
++    /// The filter that pulls the outgoing song's low end away as it leaves.
++    sweep: crate::crossfade::Sweep,
++    /// Whether the outgoing track's beats were read for this mix.
++    analysed: bool,
++    /// Where they fall, when the track has a beat to place the mix on.
++    grid: Option<crate::crossfade::BeatGrid>,
++}
++
++impl Crossfade {
++    /// Whether any of the opening was heard.
++    fn heard(&self) -> bool {
++        self.played > 0
++    }
++}
++
++/// The incoming track's opening, ready to be mixed over the outgoing track.
++struct Opening {
++    /// Interleaved stereo samples at the playback rate, already pulled to
++    /// the outgoing track's tempo.
++    samples: Vec<f64>,
++    /// Frames in `samples`, and the length of the mix.
++    frames: usize,
++    /// The incoming track's own normalisation gain.
++    gain: f64,
++    /// Where the incoming track resumes once the opening has been heard.
++    resume_ms: u32,
++    /// The outgoing track's position where the mix begins.
++    start_ms: u32,
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ enum LoadError {
+     Unavailable,
+@@ -1731,6 +1796,7 @@ impl Future for PlayerInternal {
+ 
+             if self.state.is_playing() {
+                 self.ensure_sink_running();
++                self.prepare_crossfade();
+ 
+                 if let PlayerState::Playing {
+                     ref track_id,
+@@ -1970,6 +2036,8 @@ impl PlayerInternal {
+             } => {
+                 let track_id = track_id.clone();
+ 
++                self.crossfade = Crossfade::default();
++                self.beats = crate::crossfade::BeatTracker::new(0);
+                 self.ensure_sink_stopped(false);
+                 self.send_event(PlayerEvent::Stopped {
+                     track_id,
+@@ -2043,15 +2111,288 @@ impl PlayerInternal {
+         }
+     }
+ 
++    /// Decodes the opening of the preloaded next track while the current one
++    /// plays, and works out where the mix between them goes: on a beat of the
++    /// outgoing track, with the incoming track entering on its own attack at
++    /// the outgoing tempo when the two are close enough.
++    fn prepare_crossfade(&mut self) {
++        let Some(length_ms) = self.config.crossfade_ms else {
++            return;
++        };
++        // Without gapless the sink stops between tracks, so there is nothing
++        // for the incoming opening to mix into.
++        if !self.config.gapless {
++            return;
++        }
++        if self.crossfade.opening.is_some() || self.crossfade.finished {
++            return;
++        }
++        let length_ms = length_ms.clamp(CROSSFADE_MIN_MS, CROSSFADE_MAX_MS);
++        let (duration_ms, position_ms) = match &self.state {
++            PlayerState::Playing {
++                duration_ms,
++                stream_position_ms,
++                ..
++            } => (*duration_ms, *stream_position_ms),
++            _ => return,
++        };
++        if duration_ms == 0 {
++            return;
++        }
++        // Nothing to do until the end is close enough for a mix of any
++        // length; the analysis is too costly to run on every packet.
++        let remaining = duration_ms.saturating_sub(position_ms);
++        if remaining > CROSSFADE_MAX_MS + CROSSFADE_PREPARE_AHEAD_MS {
++            return;
++        }
++
++        // The beats of the outgoing track place the mix, and its tempo is
++        // what the incoming opening is pulled to. They are read once, when
++        // the end comes into range.
++        if !self.crossfade.analysed {
++            self.crossfade.analysed = true;
++            self.crossfade.grid = self
++                .beats
++                .estimate()
++                .filter(|grid| grid.confidence >= crate::crossfade::MIN_CONFIDENCE);
++        }
++        let beats = self.crossfade.grid;
++        let (start_ms, mix_ms) = match beats {
++            Some(grid) => {
++                // Whole bars, four at most, so the mix begins on a bar line
++                // and the incoming track enters where a phrase ends.
++                let count = (f64::from(length_ms) / grid.bar_ms())
++                    .round()
++                    .clamp(1.0, 4.0);
++                // The bar line nearest the length asked for, so rounding
++                // down does not stretch the mix by another bar.
++                let target = duration_ms as f64 - count * grid.bar_ms();
++                let start = grid.nearest_bar(target);
++                let mix = duration_ms as f64 - start;
++                if (CROSSFADE_MIN_MS as f64..=CROSSFADE_MAX_MS as f64).contains(&mix) {
++                    (start.max(0.0) as u32, mix)
++                } else {
++                    (duration_ms.saturating_sub(length_ms), f64::from(length_ms))
++                }
++            }
++            None => (duration_ms.saturating_sub(length_ms), f64::from(length_ms)),
++        };
++        if f64::from(remaining) > mix_ms + f64::from(CROSSFADE_PREPARE_AHEAD_MS) {
++            return;
++        }
++
++        let PlayerPreload::Ready {
++            track_id,
++            loaded_track,
++        } = &mut self.preload
++        else {
++            return;
++        };
++        let track = track_id.clone();
++        let album = self.auto_normalise_as_album;
++        let mut config = self.config.clone();
++        if config.normalisation_type == NormalisationType::Auto {
++            config.normalisation_type = if album {
++                NormalisationType::Album
++            } else {
++                NormalisationType::Track
++            };
++        }
++        let gain = if config.normalisation {
++            NormalisationData::get_factor(&config, loaded_track.normalisation_data)
++        } else {
++            1.0
++        };
++
++        // A few seconds of the opening, enough to hear its beats and to have
++        // the whole mix, with the most a tempo pull can add.
++        let mix_frames = crate::crossfade::frames(mix_ms);
++        // The opening's first bar may be skipped to enter on a bar line, so
++        // there is more to decode than the mix itself needs.
++        let wanted = crate::crossfade::frames(4_500.0)
++            + (mix_frames as f64 * (1.0 + crate::crossfade::MAX_STRETCH)) as usize;
++        let mut decoded = Vec::with_capacity(wanted * crate::NUM_CHANNELS as usize);
++        let mut decoded_frames = 0;
++        while decoded_frames < wanted {
++            match loaded_track.decoder.next_packet() {
++                Ok(Some((_, AudioPacket::Samples(samples)))) => {
++                    decoded_frames += samples.len() / crate::NUM_CHANNELS as usize;
++                    decoded.extend_from_slice(&samples);
++                }
++                _ => break,
++            }
++        }
++        if decoded_frames < 2 || decoded_frames * 4 < mix_frames {
++            return;
++        }
++
++        let entry = crate::crossfade::opening_entry(&decoded, decoded_frames);
++        // A pull the listener would hear as a key change is worse than beats
++        // that drift apart over the mix, so only small ones are made.
++        let ratio = match (beats, entry.grid) {
++            (Some(outgoing), Some(incoming)) => {
++                let ratio = incoming.period_ms / outgoing.period_ms;
++                if (ratio - 1.0).abs() <= crate::crossfade::MAX_STRETCH {
++                    ratio
++                } else {
++                    1.0
++                }
++            }
++            _ => 1.0,
++        };
++        let available = decoded_frames.saturating_sub(entry.at);
++        let frames = (((available as f64 / ratio) as usize).min(mix_frames)).max(0);
++        if frames < crate::crossfade::frames(500.0) {
++            return;
++        }
++        let mut samples = crate::crossfade::stretch(&decoded, entry.at, frames, ratio);
++        // The incoming enters without its kick and bassline, and gets them
++        // back as the outgoing track leaves.
++        crate::crossfade::bass_swap(&mut samples, frames);
++        let resume_ms = crate::crossfade::ms_of(entry.at)
++            .saturating_add(crate::crossfade::ms_of((frames as f64 * ratio) as usize));
++
++        debug!(
++            "crossfading into <{track}> over {} ms from {} ms, entering at {} ms and resuming at {} ms, pulled {:.3}x{}",
++            crate::crossfade::ms_of(frames),
++            start_ms,
++            crate::crossfade::ms_of(entry.at),
++            resume_ms,
++            ratio,
++            match beats {
++                Some(grid) => format!(
++                    " (outgoing {:.0} BPM, {:.0} ms a bar at {:.2} confidence, incoming {})",
++                    60_000.0 / grid.period_ms,
++                    grid.bar_ms(),
++                    grid.confidence,
++                    match entry.grid {
++                        Some(grid) => format!("{:.0} BPM", 60_000.0 / grid.period_ms),
++                        None => String::from("no beat"),
++                    }
++                ),
++                None => String::from(" (no beat in the outgoing track)"),
++            }
++        );
++        self.crossfade = Crossfade {
++            track: Some(track),
++            opening: Some(Opening {
++                samples,
++                frames,
++                gain,
++                resume_ms,
++                start_ms,
++            }),
++            played: 0,
++            active: false,
++            finished: false,
++            sweep: crate::crossfade::Sweep::default(),
++            analysed: true,
++            grid: beats,
++        };
++    }
++
++    /// Mixes the incoming opening into the outgoing track's packet.
++    fn apply_crossfade(&mut self, data: &mut [f64], volume: f64) {
++        let position = match &self.state {
++            PlayerState::Playing {
++                stream_position_ms, ..
++            } => *stream_position_ms,
++            _ => return,
++        };
++        let crossfade = &mut self.crossfade;
++        let Some(opening) = crossfade.opening.as_ref() else {
++            return;
++        };
++        if crossfade.finished {
++            data.fill(0.0);
++            return;
++        }
++        if !crossfade.active {
++            if position < opening.start_ms {
++                return;
++            }
++            crossfade.active = true;
++            crossfade.played = 0;
++            debug!(
++                "the mix begins at {} ms, {} frames long",
++                opening.start_ms, opening.frames
++            );
++        }
++        // The outgoing song thins out as it leaves; the incoming one keeps
++        // its bottom, which the bass swap held back until now.
++        crossfade
++            .sweep
++            .process(data, crossfade.played, opening.frames);
++        let gain = opening.gain * volume;
++        let mixed = crate::crossfade::mix(
++            data,
++            &opening.samples,
++            crossfade.played,
++            opening.frames,
++            gain,
++        );
++        crossfade.played += mixed;
++        if crossfade.played >= opening.frames {
++            crossfade.active = false;
++            crossfade.finished = true;
++        }
++    }
++
++    /// Writes what is left of a mix when the outgoing track ends first. The
++    /// outgoing track has already been faded to silence, so the incoming
++    /// opening simply carries on.
++    fn finish_crossfade(&mut self) {
++        let volume = self.volume_getter.attenuation_factor();
++        let mut chunks = Vec::new();
++        if let Some(opening) = self.crossfade.opening.as_ref() {
++            let total = opening.frames;
++            let gain = opening.gain * volume;
++            let mut at = self.crossfade.played;
++            while at < total {
++                let end = (at + 4096).min(total);
++                let mut data = Vec::with_capacity((end - at) * crate::NUM_CHANNELS as usize);
++                for frame in at..end {
++                    let (incoming, _) = crate::crossfade::gains(frame as f64 / total.max(1) as f64);
++                    for channel in 0..crate::NUM_CHANNELS as usize {
++                        let sample = opening
++                            .samples
++                            .get(frame * crate::NUM_CHANNELS as usize + channel)
++                            .copied()
++                            .unwrap_or(0.0);
++                        data.push(sample * incoming * gain);
++                    }
++                }
++                chunks.push(data);
++                at = end;
++            }
++        }
++        for data in chunks {
++            if let Err(e) = self
++                .sink
++                .write(AudioPacket::Samples(data), &mut self.converter)
++            {
++                error!("{e}");
++                self.handle_pause();
++                break;
++            }
++        }
++        self.crossfade.played = self.crossfade.opening.as_ref().map_or(0, |o| o.frames);
++        self.crossfade.active = false;
++        self.crossfade.finished = true;
++    }
++
+     fn handle_packet(
+         &mut self,
+         packet: Option<(AudioPacketPosition, AudioPacket)>,
+         normalisation_factor: f64,
+     ) {
+         match packet {
+-            Some((_, mut packet)) => {
++            Some((packet_position, mut packet)) => {
+                 if !packet.is_empty() {
+                     if let AudioPacket::Samples(ref mut data) = packet {
++                        // The beats the mix will land on come from what the
++                        // track itself plays, before any gain touches it.
++                        self.beats.feed(data, packet_position.position_ms);
+                         // Get the volume for the packet. In the case of hardware volume control
+                         // this will always be 1.0 (no change).
+                         let volume = self.volume_getter.attenuation_factor();
+@@ -2142,6 +2483,8 @@ impl PlayerInternal {
+                                 }
+                             }
+                         }
++
++                        self.apply_crossfade(data, volume);
+                     }
+ 
+                     if let Err(e) = self.sink.write(packet, &mut self.converter) {
+@@ -2152,6 +2495,9 @@ impl PlayerInternal {
+             }
+ 
+             None => {
++                if self.crossfade.active {
++                    self.finish_crossfade();
++                }
+                 self.state.playing_to_end_of_track();
+                 if let PlayerState::EndOfTrack {
+                     ref track_id,
+@@ -2175,9 +2521,27 @@ impl PlayerInternal {
+         &mut self,
+         track_id: SpotifyUri,
+         play_request_id: u64,
+-        loaded_track: PlayerLoadedTrackData,
++        mut loaded_track: PlayerLoadedTrackData,
+         start_playback: bool,
+     ) {
++        // A track that follows the one before it naturally, and whose
++        // opening was heard in the mix, carries on after that opening.
++        if matches!(self.state, PlayerState::EndOfTrack { .. })
++            && self.crossfade.track.as_ref() == Some(&track_id)
++            && self.crossfade.heard()
++            && let Some(opening) = self.crossfade.opening.as_ref()
++        {
++            let resume_ms = opening.resume_ms;
++            match loaded_track.decoder.seek(resume_ms) {
++                Ok(position) => loaded_track.stream_position_ms = position,
++                Err(e) => {
++                    warn!("Unable to resume <{track_id}> at {resume_ms} ms after the mix: {e}")
++                }
++            }
++        }
++        self.crossfade = Crossfade::default();
++        self.beats = crate::crossfade::BeatTracker::new(loaded_track.stream_position_ms);
++
+         let audio_item = Box::new(loaded_track.audio_item.clone());
+ 
+         self.send_event(PlayerEvent::TrackChanged { audio_item });
+@@ -2260,6 +2624,12 @@ impl PlayerInternal {
+ 
+         self.send_event(PlayerEvent::PlayRequestIdChanged { play_request_id });
+ 
++        // A mix belongs to the track that follows the one playing. Anything
++        // else being loaded drops it.
++        if self.crossfade.track.as_ref() != Some(&track_id) {
++            self.crossfade = Crossfade::default();
++        }
++
+         if !self.config.gapless {
+             self.ensure_sink_stopped(play);
+         }
+@@ -2400,7 +2770,12 @@ impl PlayerInternal {
+                     mut loaded_track,
+                 } = preload
+                 {
+-                    if position_ms != loaded_track.stream_position_ms {
++                    // A mix that was heard resumes after its opening inside
++                    // start_playback; every other load starts where it asks.
++                    let mixed = matches!(self.state, PlayerState::EndOfTrack { .. })
++                        && self.crossfade.track.as_ref() == Some(&track_id)
++                        && self.crossfade.heard();
++                    if !mixed {
+                         // This may be blocking
+                         loaded_track.stream_position_ms = loaded_track.decoder.seek(position_ms)?;
+                     }
+@@ -2511,6 +2886,16 @@ impl PlayerInternal {
+ 
+     fn handle_command_preload(&mut self, track_id: SpotifyUri) {
+         debug!("Preloading track");
++        // A mix holds an opening decoded from the preload it was made from,
++        // so a preload of another track makes it stale.
++        if self
++            .crossfade
++            .track
++            .as_ref()
++            .is_some_and(|track| track != &track_id)
++        {
++            self.crossfade = Crossfade::default();
++        }
+         let mut preload_track = true;
+         // check whether the track is already loaded somewhere or being loaded.
+         if let PlayerPreload::Loading {
+@@ -2581,8 +2966,10 @@ impl PlayerInternal {
+         }
+ 
+         if let Some(decoder) = self.state.decoder() {
++            self.crossfade = Crossfade::default();
+             match decoder.seek(position_ms) {
+                 Ok(new_position_ms) => {
++                    self.beats.restart(new_position_ms);
+                     if let PlayerState::Playing {
+                         ref mut stream_position_ms,
+                         ref track_id,
+@@ -2641,6 +3028,17 @@ impl PlayerInternal {
+ 
+             PlayerCommand::Seek(position_ms) => self.handle_command_seek(position_ms)?,
+ 
++            PlayerCommand::SetCrossfade(length_ms) => {
++                let decoded = self.crossfade.opening.is_some();
++                self.config.crossfade_ms = length_ms.filter(|length| *length > 0);
++                self.crossfade = Crossfade::default();
++                // An opening that was being decoded has left the preload's
++                // decoder part-way through the track.
++                if decoded {
++                    self.preload = PlayerPreload::None;
++                }
++            }
++
+             PlayerCommand::Play => self.handle_play(),
+ 
+             PlayerCommand::Pause => self.handle_pause(),
+@@ -2866,6 +3264,9 @@ impl fmt::Debug for PlayerCommand {
+             PlayerCommand::Pause => f.debug_tuple("Pause").finish(),
+             PlayerCommand::Stop => f.debug_tuple("Stop").finish(),
+             PlayerCommand::Seek(position) => f.debug_tuple("Seek").field(&position).finish(),
++            PlayerCommand::SetCrossfade(length) => {
++                f.debug_tuple("SetCrossfade").field(&length).finish()
++            }
+             PlayerCommand::SetSession(_) => f.debug_tuple("SetSession").finish(),
+             PlayerCommand::AddEventSender(_) => f.debug_tuple("AddEventSender").finish(),
+             PlayerCommand::SetSinkEventCallback(_) => {

@@ -49,6 +49,8 @@ pub struct EngineConfig {
     pub normalisation: bool,
     pub autoplay: bool,
     pub gapless: bool,
+    /// Seconds of the blend between one song and the next; zero is none.
+    pub crossfade_seconds: u8,
     /// The saved output, an id or an older build's name (`crate::sink::Saved`).
     pub audio_device: Option<String>,
     pub initial_volume: u16,
@@ -64,6 +66,12 @@ pub struct EngineConfig {
     pub proxy: crate::settings::ProxyConfig,
     /// The folder a playlist's `spotify:local:` songs play from.
     pub local_files: Option<PathBuf>,
+}
+
+/// The blend a saved number of seconds asks for.
+fn blend_ms(seconds: u8) -> Option<u32> {
+    // Longer than this is no longer a mix between two songs.
+    (seconds > 0).then(|| u32::from(seconds.min(12)) * 1_000)
 }
 
 impl EngineConfig {
@@ -301,6 +309,8 @@ pub enum PlayerCommand {
     VolumePreview(u16),
     Shuffle(bool),
     Repeat(RepeatMode),
+    /// Seconds of the blend between one song and the next; zero is none.
+    Crossfade(u8),
     Load(LoadSpec),
     /// Take over the active Connect session, including its queue and position.
     Transfer,
@@ -513,6 +523,7 @@ impl Engine {
         let player_config = PlayerConfig {
             bitrate: config.bitrate(),
             gapless: config.gapless,
+            crossfade_ms: blend_ms(config.crossfade_seconds),
             normalisation: config.normalisation,
             normalisation_type: NormalisationType::Auto,
             position_update_interval: Some(Duration::from_secs(1)),
@@ -743,6 +754,7 @@ impl Engine {
             PlayerCommand::Seek(position_ms) => spirc.set_position_ms(position_ms)?,
             PlayerCommand::Volume(volume) => self.note_volume(volume, false)?,
             PlayerCommand::VolumePreview(volume) => self.note_volume(volume, true)?,
+            PlayerCommand::Crossfade(seconds) => self.player.set_crossfade(blend_ms(seconds)),
             PlayerCommand::Shuffle(enabled) => spirc.shuffle(enabled)?,
             PlayerCommand::Repeat(mode) => match mode {
                 RepeatMode::Off => {
@@ -1834,6 +1846,17 @@ mod tests {
         assert_eq!(RepeatMode::Context.api_name(), "context");
     }
 
+    /// The blend asks librespot for milliseconds, and a file's wild number
+    /// still lands inside what two songs can overlap by.
+    #[test]
+    fn the_blend_length_is_bounded_and_zero_turns_it_off() {
+        assert_eq!(blend_ms(0), None);
+        assert_eq!(blend_ms(1), Some(1_000));
+        assert_eq!(blend_ms(6), Some(6_000));
+        assert_eq!(blend_ms(12), Some(12_000));
+        assert_eq!(blend_ms(200), Some(12_000));
+    }
+
     #[test]
     fn device_id_is_stable_hex() {
         let config = EngineConfig {
@@ -1845,6 +1868,7 @@ mod tests {
             normalisation: false,
             autoplay: true,
             gapless: true,
+            crossfade_seconds: 6,
             audio_device: None,
             initial_volume: 1,
             volume_dir: PathBuf::new(),

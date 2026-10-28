@@ -1220,6 +1220,8 @@ pub enum Action {
     Seek(u32),
     SeekBy(i64),
     SetVolume(u8),
+    /// Seconds of the blend between one song and the next; zero is none.
+    SetCrossfade(u8),
     /// Preview volume locally during a drag; send it to Spotify on release.
     PreviewVolume(u8),
     VolumeBy(i8),
