@@ -761,20 +761,24 @@ fn mix_menu(app: &mut App, ui: &mut egui::Ui, id: &str) {
         app.actions.push(Action::LoadPlayingSignals);
         return;
     };
-    let requested = state.requested;
+    if let Some(error) = &state.error {
+        ui.label(error);
+        if ui.button(gettext(locale, "Retry").as_ref()).clicked() {
+            app.actions.push(Action::LoadPlayingSignals);
+        }
+        return;
+    }
+    let loading = state.loading;
     let controls = state.controls.clone();
     let selected = state.selected.clone();
     let applying = state.applying;
     if controls.is_empty() {
-        let text = if requested {
-            gettext(locale, "No options for this playlist")
-        } else {
+        let text = if loading {
             gettext(locale, "Loading options...")
+        } else {
+            gettext(locale, "No options for this playlist")
         };
         ui.add_enabled(false, egui::Button::new(text.as_ref()));
-        if !requested {
-            app.actions.push(Action::LoadPlayingSignals);
-        }
         return;
     }
     ui.add_enabled_ui(!applying, |ui| {

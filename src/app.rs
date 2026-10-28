@@ -23697,6 +23697,43 @@ mod tests {
         app.backend.shutdown();
     }
 
+    #[test]
+    fn playing_mix_distinguishes_loading_failure_and_empty_answer() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.assumed_context = Some(AssumedContext {
+            uri: format!("spotify:playlist:{DISCOVER_ID}"),
+            shuffle: None,
+            at: Instant::now(),
+        });
+        app.load_playing_signals();
+        let state = app.playing_signals.as_ref().unwrap();
+        assert!(state.loading);
+        let old = state.generation;
+        app.receive_playlist_signals(DISCOVER_ID, old, Err("temporary failure".into()));
+        let state = app.playing_signals.as_ref().unwrap();
+        assert!(!state.loading);
+        assert!(!state.requested);
+        assert_eq!(state.error.as_deref(), Some("temporary failure"));
+
+        app.load_playing_signals();
+        let state = app.playing_signals.as_ref().unwrap();
+        let current = state.generation;
+        assert!(state.loading);
+        assert!(state.error.is_none());
+        app.receive_playlist_signals(DISCOVER_ID, old, Err("stale failure".into()));
+        assert!(app.playing_signals.as_ref().unwrap().loading);
+        app.receive_playlist_signals(DISCOVER_ID, current, Ok(Default::default()));
+        let state = app.playing_signals.as_ref().unwrap();
+        assert!(!state.loading);
+        assert!(state.requested);
+        assert!(state.error.is_none());
+        assert!(state.controls.is_empty());
+        app.load_playing_signals();
+        assert_eq!(app.playing_signals.as_ref().unwrap().generation, current);
+        app.backend.shutdown();
+    }
+
     const RADIO_SEED_ID: &str = "3JA9Jsuxr4xgHXEawAdCp4";
     const RADIO_OTHER: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     const RADIO_THIRD: &str = "spotify:track:7GhIk7Il098yCjg4BQjzvb";

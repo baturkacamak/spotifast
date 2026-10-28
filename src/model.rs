@@ -991,6 +991,8 @@ pub struct PlayingSignals {
     pub generation: u64,
     /// The options were asked for; an empty answer is not asked for again.
     pub requested: bool,
+    pub loading: bool,
+    pub error: Option<String>,
 }
 
 /// A radio page: the songs Spotify mixed for its seed, which are the songs

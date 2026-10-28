@@ -81,6 +81,9 @@ drag the lower-right corner to resize the window. Use X or **PL** to close it.
   playing, such as "Give me more indie pop" on Discover Weekly. Choosing one
   reshapes the list on Spotify's side; the song and place already playing are
   kept, and the queue follows the new list. Choosing it again turns it off.
+  The menu shows when options are loading. A failed read shows its error and
+  a Retry button; "No options for this playlist" means Spotify answered with
+  no options for that playlist.
 - **REM → Remove selected** takes the selected songs you queued out of the
   queue, and **REM → Remove all** clears every song you queued. Both work when
   this computer is playing. Songs from the playing album or playlist stay.

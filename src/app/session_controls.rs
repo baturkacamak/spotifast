@@ -37,6 +37,7 @@ impl App {
             id: id.clone(),
             generation,
             requested: true,
+            loading: true,
             ..PlayingSignals::default()
         });
         self.backend
@@ -93,6 +94,17 @@ impl App {
         generation: u64,
         result: Result<crate::session_reads::PlaylistSignals, String>,
     ) {
+        if let Some(state) = self
+            .playing_signals
+            .as_mut()
+            .filter(|state| state.id == id && state.generation == generation)
+        {
+            state.loading = false;
+            state.error = result.as_ref().err().cloned();
+            if result.is_err() {
+                state.requested = false;
+            }
+        }
         let Ok(answer) = &result else {
             // A playlist read without playback has no options to show.
             return;
