@@ -61,8 +61,17 @@ Spotifast uses separate credentials for Web API access and local playback:
    while existing cards stay visible. Shared rate limits can still prevent
    this fallback from loading. This
    private response can change without notice. Radio pages come only from
-   this session: the Web API has no stations. Opening one resolves the
-   station and reads its songs' details in one batched request.
+   this session: the Web API has no radios. Opening one asks Spotify's
+   seed-to-playlist request which playlist its own app opens for that seed,
+   and reads the playlist's songs, the options it offers, and the options
+   already applied from the playlist service. Choosing an option applies its
+   signal to that playlist, and Spotify answers with the reshaped list, which
+   is what the page then shows and plays. A playlist page reads the same
+   options from its header and applies them the same way; its rows are read
+   again afterwards. A seed Spotify answers with a station, such as a playlist
+   seed, keeps the station: opening it resolves the station and reads its
+   songs' details in one batched request, with no options. Applying an option
+   is the only radio or playlist request that writes.
    Play counts on album pages and an artist's popular songs come from the
    same Pathfinder queries Spotify's own album and artist pages make, with the
    session's token and an already verified Web API grant. Each album or artist

@@ -8,7 +8,7 @@ use egui::{
 use crate::api::models::*;
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext, pgettext};
-use crate::model::{Action, Dialog, DragEntry, DragTrack, Page, RowContext, RowPick};
+use crate::model::{Action, Dialog, DragEntry, DragTrack, Page, RadioControl, RowContext, RowPick};
 use crate::theme::{self, Icon, Palette};
 use crate::util;
 
@@ -17,6 +17,54 @@ pub const CARD_WIDTH: f32 = 172.0;
 pub const CARD_ART: f32 = CARD_WIDTH - 24.0;
 pub const CARD_GAP: f32 = 14.0;
 pub const PAGE_PADDING: f32 = 24.0;
+
+/// Where a session control applies: a radio page's seed, or a playlist.
+#[derive(Clone, Copy)]
+pub enum SessionScope<'a> {
+    Radio(&'a str),
+    Playlist(&'a str),
+}
+
+/// Spotify's options above a page's songs, in its own wording. The applied
+/// one is marked selected, and clicking it turns it off; clicking another
+/// replaces it. The row waits while an option is being applied, so the newest
+/// choice is the one Spotify answers.
+pub fn session_controls(
+    app: &mut App,
+    ui: &mut Ui,
+    scope: SessionScope<'_>,
+    controls: &[RadioControl],
+    selected: &[String],
+    applying: bool,
+) {
+    if controls.is_empty() {
+        return;
+    }
+    ui.add_space(2.0);
+    ui.add_enabled_ui(!applying, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for control in controls {
+                let active = selected.iter().any(|signal| signal == &control.signal);
+                if ui
+                    .add(egui::Button::new(control.label.as_str()).selected(active))
+                    .clicked()
+                {
+                    app.actions.push(match scope {
+                        SessionScope::Radio(seed) => Action::ApplyRadioSignal {
+                            seed: seed.to_string(),
+                            signal: control.signal.clone(),
+                        },
+                        SessionScope::Playlist(id) => Action::ApplyPlaylistSignal {
+                            id: id.to_string(),
+                            signal: control.signal.clone(),
+                        },
+                    });
+                }
+            }
+        });
+    });
+    ui.add_space(4.0);
+}
 
 /// Draws an image (or a placeholder) in a square.
 pub fn cover(

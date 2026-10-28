@@ -39,6 +39,13 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
     }
     let generation = page.generation;
     let refreshing = page.refreshing;
+    let applying = page.applying;
+    // The playlist Spotify mixed this radio in, when it has one; the
+    // station otherwise. Playing the page plays this context, so the queue
+    // names the radio and its songs stay the ones shown.
+    let context = page.uri.clone().unwrap_or_else(|| station.clone());
+    let controls = page.controls.clone();
+    let selected = page.selected.clone();
     let state = match &page.songs {
         Loadable::Loaded(songs) => Ok(Some((
             songs.len(),
@@ -90,7 +97,7 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
                 actions_row(
                     app,
                     ui,
-                    radio_actions(seed, &station, &name, None, false),
+                    radio_actions(seed, &context, &name, None, false),
                     None,
                 )
             });
@@ -117,7 +124,7 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
                 actions_row(
                     app,
                     ui,
-                    radio_actions(seed, &station, &name, None, false),
+                    radio_actions(seed, &context, &name, None, false),
                     None,
                 )
             });
@@ -148,8 +155,16 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
     actions_row(
         app,
         ui,
-        radio_actions(seed, &station, &name, Some(Arc::clone(&uris)), !refreshing),
+        radio_actions(seed, &context, &name, Some(Arc::clone(&uris)), !refreshing),
         None,
+    );
+    widgets::session_controls(
+        app,
+        ui,
+        widgets::SessionScope::Radio(seed),
+        &controls,
+        &selected,
+        applying,
     );
     table(
         app,
@@ -160,7 +175,7 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
             pagination: None,
             context: RowContext::View {
                 uris,
-                context_uri: station,
+                context_uri: context,
                 editable_playlist: None,
             },
             show_album: true,
@@ -181,13 +196,13 @@ pub fn radio(app: &mut App, ui: &mut egui::Ui, seed: &str) {
 
 fn radio_actions<'a>(
     seed: &str,
-    station: &str,
+    context: &str,
     name: &'a str,
     view: Option<Arc<[String]>>,
     loaded: bool,
 ) -> Actions<'a> {
     Actions {
-        play_uri: Some(station.to_string()),
+        play_uri: Some(context.to_string()),
         view,
         saved: None,
         saved_icons: (Icon::CirclePlus, Icon::CircleCheck),

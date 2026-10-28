@@ -77,6 +77,10 @@ drag the lower-right corner to resize the window. Use X or **PL** to close it.
 - **SEL** selects rows.
 - **MISC** opens song, artist, and album pages.
 - **LIST OPTS** starts one of your playlists or saves the queue as a new one.
+  **LIST OPTS → Mix** shows Spotify's options for the playlist that is
+  playing, such as "Give me more indie pop" on Discover Weekly. Choosing one
+  reshapes the list on Spotify's side; the song and place already playing are
+  kept, and the queue follows the new list. Choosing it again turns it off.
 - **REM → Remove selected** takes the selected songs you queued out of the
   queue, and **REM → Remove all** clears every song you queued. Both work when
   this computer is playing. Songs from the playing album or playlist stay.

@@ -409,6 +409,18 @@ pub fn populate(app: &mut App) {
     );
     let mut discover_page = PlaylistPage {
         playlist: Loadable::Loaded(playlists[0].clone()),
+        controls: vec![
+            RadioControl {
+                signal: "session_control_display$demo$indie_pop:nl_genre".into(),
+                label: "Give me more indie pop".into(),
+            },
+            RadioControl {
+                signal: "session_control_display$demo$jazz:nl_genre".into(),
+                label: "Make it more jazz".into(),
+            },
+        ],
+        reset: Some(crate::session_reads::RADIO_RESET_SIGNAL.into()),
+        signals_checked: true,
         ..PlaylistPage::default()
     };
     discover_page.items.absorb(
@@ -490,7 +502,8 @@ pub fn populate(app: &mut App) {
     app.show_pages.insert("sh0".into(), show_page);
 
     // Radio pages, for a song and for a playlist. A song radio starts with
-    // the song it is based on; a playlist radio has no song seed.
+    // the song it is based on; a playlist radio has no song seed. Both carry
+    // the options Spotify's own radio pages show above their songs.
     for (seed, songs) in [
         ("spotify:track:trk0", tracks[..30].to_vec()),
         ("spotify:playlist:pl1", tracks[8..38].to_vec()),
@@ -499,6 +512,18 @@ pub fn populate(app: &mut App) {
             seed.into(),
             RadioPage {
                 songs: Loadable::Loaded(songs),
+                uri: Some(seed.into()),
+                controls: vec![
+                    RadioControl {
+                        signal: "session_control_display$demo$soul:nl_genre".into(),
+                        label: "Give me more soul".into(),
+                    },
+                    RadioControl {
+                        signal: "session_control_display$demo$rock:nl_genre".into(),
+                        label: "Go deeper into rock".into(),
+                    },
+                ],
+                reset: Some(crate::session_reads::RADIO_RESET_SIGNAL.into()),
                 ..RadioPage::default()
             },
         );

@@ -19,7 +19,10 @@ use librespot_protocol::extended_metadata::{
     BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
 use librespot_protocol::extension_kind::ExtensionKind;
-use librespot_protocol::playlist4_external::{Item, ListItems, MetaItem, SelectedListContent};
+use librespot_protocol::playlist4_external::{
+    Item, ListAttributes, ListItems, ListSignals, MetaItem, SelectedListContent,
+};
+use librespot_protocol::signal_model::Signal;
 use protobuf::{EnumOrUnknown, Message as _};
 
 use crate::api::ApiError;
@@ -27,6 +30,7 @@ use crate::api::models::{
     Album, Artist, ArtistRef, Episode, Image, Owner, Page, PlayableItem, Playlist, PlaylistItem,
     Show, Track, TrackCount, UserRef,
 };
+use crate::model::RadioControl;
 
 const IMAGE_HOST: &str = "https://i.scdn.co/image/";
 
@@ -936,6 +940,310 @@ fn library_row(item: &Item, meta: &MetaItem) -> Option<Playlist> {
     })
 }
 
+/// A radio as Spotify's own app shows it: the playlist its mix lives in, the
+/// options it offers above the songs, and the songs in the order shown.
+pub struct RadioMix {
+    /// The Spotify context the songs belong to: the radio's playlist, or the
+    /// station when Spotify has no playlist for this seed.
+    pub uri: String,
+    /// The playlist's name, which Spotify localizes for the listener.
+    pub name: Option<String>,
+    pub songs: Vec<Track>,
+    /// The options Spotify offered, with its own wording for each.
+    pub controls: Vec<RadioControl>,
+    /// The signal that clears every applied option, when Spotify offers one.
+    pub reset: Option<String>,
+    /// The options Spotify reports as applied.
+    pub selected: Vec<String>,
+}
+
+/// The signal Spotify uses to clear every applied radio option.
+pub const RADIO_RESET_SIGNAL: &str = "session-control-reset";
+/// Where a control's wording sits among a playlist's format attributes.
+const RADIO_CONTROL_LABEL: &str = "session_control_display.displayName.";
+/// Where the applied options sit among a playlist's format attributes.
+const RADIO_SELECTED: &str = "session_control.selected_signals";
+
+/// Spotify's radio for `seed`: the playlist its own app opens, with the
+/// options that reshape the mix, or the station when Spotify has no playlist
+/// for this seed. A playlist or station is mixed afresh by Spotify, so the
+/// songs returned here are the ones to play.
+pub async fn radio(session: &Session, seed: &str) -> anyhow::Result<RadioMix> {
+    match radio_playlist(session, seed).await {
+        Ok(Some(playlist)) => match playlist_radio(session, seed, &playlist).await {
+            Ok(mix) => return Ok(mix),
+            Err(error) => log::warn!("radio playlist {playlist} failed: {error:#}"),
+        },
+        Ok(None) => {}
+        Err(error) => log::warn!("radio playlist for {seed} failed: {error:#}"),
+    }
+    let station_uri = crate::util::station_uri(seed)
+        .ok_or_else(|| anyhow::anyhow!("There is no radio for this item."))?;
+    let songs = station(session, &station_uri).await?;
+    Ok(RadioMix {
+        uri: station_uri,
+        name: None,
+        songs,
+        controls: Vec::new(),
+        reset: None,
+        selected: Vec::new(),
+    })
+}
+
+/// The radio playlist Spotify names for `seed`, when it names one.
+async fn radio_playlist(session: &Session, seed: &str) -> anyhow::Result<Option<String>> {
+    let endpoint = format!("/inspiredby-mix/v2/seed_to_playlist/{seed}?response-format=json");
+    let bytes = session
+        .spclient()
+        .request(&http::Method::GET, &endpoint, None, None)
+        .await?;
+    let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(radio_playlist_uri(&body))
+}
+
+/// The first radio playlist among a seed-to-playlist answer. A seed Spotify
+/// answers with a station has no playlist, so it keeps the station instead.
+fn radio_playlist_uri(body: &serde_json::Value) -> Option<String> {
+    body.get("mediaItems")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("uri").and_then(serde_json::Value::as_str))
+        .find(|uri| uri.starts_with("spotify:playlist:"))
+        .map(str::to_string)
+}
+
+/// The session controls a playlist offers, the ones Spotify reports as
+/// applied, and its songs in order. They are read from any playlist, not only
+/// a radio's.
+#[derive(Clone, Default)]
+pub struct PlaylistSignals {
+    pub controls: Vec<RadioControl>,
+    pub reset: Option<String>,
+    pub selected: Vec<String>,
+    pub uris: Vec<String>,
+}
+
+async fn playlist_radio(session: &Session, seed: &str, playlist: &str) -> anyhow::Result<RadioMix> {
+    let content = playlist_content(session, playlist).await?;
+    radio_mix(session, seed, playlist, content).await
+}
+
+/// The playlist's header, options, and songs as the playlist service gives
+/// them. The format attributes carry Spotify's wording for each option and
+/// the ones it has applied.
+async fn playlist_content(
+    session: &Session,
+    playlist: &str,
+) -> anyhow::Result<SelectedListContent> {
+    let id = playlist_base62(playlist)?;
+    let endpoint = format!("/playlist/v2/playlist/{id}?decorate=revision,length,attributes,owner");
+    let bytes = session
+        .spclient()
+        .request(&http::Method::GET, &endpoint, None, None)
+        .await?;
+    Ok(SelectedListContent::parse_from_bytes(&bytes)?)
+}
+
+fn playlist_base62(playlist: &str) -> anyhow::Result<&str> {
+    let id = playlist
+        .strip_prefix("spotify:playlist:")
+        .unwrap_or(playlist);
+    if id.is_empty() {
+        anyhow::bail!("not a playlist: {playlist}");
+    }
+    Ok(id)
+}
+
+/// The options a playlist offers, with Spotify's wording, and the ones it has
+/// applied. A playlist with none keeps an empty set rather than an error.
+pub async fn playlist_signals(
+    session: &Session,
+    playlist: &str,
+) -> anyhow::Result<PlaylistSignals> {
+    let content = playlist_content(session, playlist).await?;
+    Ok(playlist_signal_state(&content))
+}
+
+/// Applies `signal` to the playlist, and returns the options Spotify answers
+/// with. Applying an option reshapes the list on Spotify's side; the caller
+/// reads the list again to show it.
+pub async fn playlist_signal(
+    session: &Session,
+    playlist: &str,
+    signal: &str,
+) -> anyhow::Result<PlaylistSignals> {
+    let content = post_signal(session, playlist, signal).await?;
+    Ok(playlist_signal_state(&content))
+}
+
+fn playlist_signal_state(content: &SelectedListContent) -> PlaylistSignals {
+    let attributes = content.attributes.clone().into_option();
+    let signals: &[Signal] = match content.contents.as_ref() {
+        Some(contents) => &contents.available_signals,
+        None => &[],
+    };
+    let (controls, reset) = radio_controls(attributes.as_ref(), signals);
+    let uris = content
+        .contents
+        .as_ref()
+        .map(|contents| {
+            radio_uris(contents)
+                .iter()
+                .map(SpotifyUri::to_uri)
+                .collect()
+        })
+        .unwrap_or_default();
+    PlaylistSignals {
+        controls,
+        reset,
+        selected: applied_signals(attributes.as_ref()),
+        uris,
+    }
+}
+
+/// Sends `signal` for the playlist, on top of the revision just read, and
+/// parses what Spotify answers. The reset signal clears every applied option.
+async fn post_signal(
+    session: &Session,
+    playlist: &str,
+    signal: &str,
+) -> anyhow::Result<SelectedListContent> {
+    let before = playlist_content(session, playlist).await?;
+    let mut request = ListSignals::new();
+    let revision = before.revision.clone().unwrap_or_default();
+    if !revision.is_empty() {
+        request.base_revision = Some(revision);
+    }
+    let mut emitted = Signal::new();
+    emitted.identifier = signal.to_string();
+    request.emitted_signals.push(emitted);
+    let body = request.write_to_bytes()?;
+    let id = playlist_base62(playlist)?;
+    let endpoint = format!("/playlist/v2/playlist/{id}/signals");
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/x-protobuf"),
+    );
+    let bytes = session
+        .spclient()
+        .request(&http::Method::POST, &endpoint, Some(headers), Some(&body))
+        .await?;
+    Ok(SelectedListContent::parse_from_bytes(&bytes)?)
+}
+
+/// Applies `signal` to the radio playlist, and returns the mix Spotify
+/// answers with: the reselected songs, its options, and their state.
+pub async fn radio_signal(
+    session: &Session,
+    seed: &str,
+    playlist: &str,
+    signal: &str,
+) -> anyhow::Result<RadioMix> {
+    let content = post_signal(session, playlist, signal).await?;
+    radio_mix(session, seed, playlist, content).await
+}
+
+async fn radio_mix(
+    session: &Session,
+    seed: &str,
+    uri: &str,
+    content: SelectedListContent,
+) -> anyhow::Result<RadioMix> {
+    let attributes = content.attributes.clone().into_option();
+    let Some(contents) = content.contents.into_option() else {
+        anyhow::bail!("Spotify has no songs for this radio");
+    };
+    let uris = seed_first(seed, radio_uris(&contents));
+    anyhow::ensure!(!uris.is_empty(), "Spotify has no songs for this radio");
+    let found = metadata_tolerating(session, uris.iter(), &BTreeSet::new())
+        .await
+        .map_err(|failure| match failure {
+            Failure::Definitive(error) => anyhow::anyhow!("{error}"),
+            Failure::Retry(error) => error,
+        })?;
+    let (controls, reset) = radio_controls(attributes.as_ref(), &contents.available_signals);
+    let selected = applied_signals(attributes.as_ref());
+    let name = attributes
+        .as_ref()
+        .and_then(|attributes| attributes.name.clone())
+        .filter(|name| !name.trim().is_empty());
+    Ok(RadioMix {
+        uri: uri.to_string(),
+        name,
+        songs: resolved_station(&uris, &found),
+        controls,
+        reset,
+        selected,
+    })
+}
+
+/// The options among the signals Spotify offers, in its order, each with the
+/// wording it gave for that signal. The reset signal is not an option of its
+/// own: it is how an applied option is turned off.
+fn radio_controls(
+    attributes: Option<&ListAttributes>,
+    signals: &[Signal],
+) -> (Vec<RadioControl>, Option<String>) {
+    let mut controls = Vec::new();
+    let mut reset = None;
+    for signal in signals {
+        let identifier = signal.identifier.as_str();
+        if identifier == RADIO_RESET_SIGNAL {
+            reset = Some(identifier.to_string());
+            continue;
+        }
+        let Some(label) = attributes.and_then(|attributes| control_label(attributes, identifier))
+        else {
+            continue;
+        };
+        controls.push(RadioControl {
+            signal: identifier.to_string(),
+            label,
+        });
+    }
+    (controls, reset)
+}
+
+/// Spotify's wording for one option, found by the signal's name after its
+/// last `$`: `session_control_display$<list>$more_discovery` is named by
+/// `session_control_display.displayName.more_discovery`.
+fn control_label(attributes: &ListAttributes, signal: &str) -> Option<String> {
+    let name = signal.rsplit('$').next()?;
+    let key = format!("{RADIO_CONTROL_LABEL}{name}");
+    attributes
+        .format_attributes
+        .iter()
+        .find(|attribute| attribute.key() == key)
+        .map(|attribute| attribute.value().trim().to_string())
+        .filter(|label| !label.is_empty())
+}
+
+/// The options Spotify reports as applied, in its order.
+fn applied_signals(attributes: Option<&ListAttributes>) -> Vec<String> {
+    attributes
+        .into_iter()
+        .flat_map(|attributes| attributes.format_attributes.iter())
+        .filter(|attribute| attribute.key() == RADIO_SELECTED)
+        .flat_map(|attribute| attribute.value().split(','))
+        .map(str::trim)
+        .filter(|signal| !signal.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The playlist's songs, named by URI or raw id, each once and in order.
+fn radio_uris(contents: &ListItems) -> Vec<SpotifyUri> {
+    let mut seen = BTreeSet::new();
+    contents
+        .items
+        .iter()
+        .filter_map(|item| SpotifyUri::from_uri(item.uri()).ok())
+        .filter(|uri| seen.insert(uri.to_uri()))
+        .filter(|uri| matches!(uri, SpotifyUri::Track { .. }))
+        .collect()
+}
+
 /// The songs of Spotify's radio `station`, with a song seed first and the
 /// rest in Spotify's order, their details from one batched request. Spotify
 /// mixes a station afresh each time it is resolved, so the list returned
@@ -970,8 +1278,8 @@ fn station_uris(
 /// A station seeded by a song starts with that song, exactly once, followed
 /// by its other songs in Spotify's order. Other kinds of station keep the
 /// order Spotify returned.
-pub(crate) fn seed_first(station: &str, uris: Vec<SpotifyUri>) -> Vec<SpotifyUri> {
-    let Some(seed) = track_seed(station) else {
+pub(crate) fn seed_first(seed: &str, uris: Vec<SpotifyUri>) -> Vec<SpotifyUri> {
+    let Some(seed) = track_seed(seed) else {
         return uris;
     };
     let seed_uri = seed.to_uri();
@@ -981,9 +1289,10 @@ pub(crate) fn seed_first(station: &str, uris: Vec<SpotifyUri>) -> Vec<SpotifyUri
     ordered
 }
 
-/// The song a station is seeded by, when the seed is a song Spotify can name.
-fn track_seed(station: &str) -> Option<SpotifyUri> {
-    let seed = crate::util::station_seed(station)?;
+/// The song a radio seed names, whether it is a station URI or the seed
+/// itself, when that seed is a song Spotify can name.
+fn track_seed(seed: &str) -> Option<SpotifyUri> {
+    let seed = crate::util::station_seed(seed).unwrap_or_else(|| seed.to_string());
     match SpotifyUri::from_uri(&seed).ok()? {
         seed @ SpotifyUri::Track { .. } => Some(seed),
         _ => None,
@@ -2031,6 +2340,7 @@ mod tests {
     use librespot_metadata::Metadata as _;
 
     use super::*;
+    use librespot_protocol::playlist4_external::FormatListAttribute;
 
     #[test]
     fn related_artist_cards_keep_order_identity_and_images() {
@@ -3083,6 +3393,165 @@ mod tests {
         );
     }
 
+    /// Spotify's seed-to-playlist answer names a playlist for a song or an
+    /// album radio; a playlist seed answers with a station, which has no
+    /// options of its own.
+    #[test]
+    fn a_seed_answer_names_the_radio_playlist_when_it_has_one() {
+        let playlist = serde_json::json!({
+            "total": 1,
+            "mediaItems": [{"uri": "spotify:playlist:37i9dQZF1E4AaxlmEozmrV"}]
+        });
+        assert_eq!(
+            radio_playlist_uri(&playlist).as_deref(),
+            Some("spotify:playlist:37i9dQZF1E4AaxlmEozmrV")
+        );
+        let station = serde_json::json!({
+            "total": 1,
+            "mediaItems": [{"uri": "spotify:station:playlist:37i9dQZF1DXcBWIGoYBM5M"}]
+        });
+        assert_eq!(radio_playlist_uri(&station), None);
+        assert_eq!(radio_playlist_uri(&serde_json::json!({})), None);
+    }
+
+    fn format_attribute(key: &str, value: &str) -> FormatListAttribute {
+        FormatListAttribute {
+            key: Some(key.into()),
+            value: Some(value.into()),
+            ..Default::default()
+        }
+    }
+
+    fn signal(identifier: &str) -> Signal {
+        Signal {
+            identifier: identifier.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The options take Spotify's wording for the signal's name, keep
+    /// Spotify's order, and leave out the reset signal and anything Spotify
+    /// gave no wording for.
+    #[test]
+    fn radio_options_take_spotify_wording_and_leave_the_reset_out() {
+        let attributes = ListAttributes {
+            format_attributes: vec![
+                format_attribute(
+                    "session_control_display.displayName.more_discovery",
+                    "More discovery tracks",
+                ),
+                format_attribute(
+                    "session_control_display.displayName.soul:nl_genre",
+                    "Give me more soul",
+                ),
+            ],
+            ..Default::default()
+        };
+        let signals = [
+            signal("session_control_display$abc$more_discovery"),
+            signal("session_control_display$def$soul:nl_genre"),
+            signal("session_control_display$def$unworded"),
+            signal(RADIO_RESET_SIGNAL),
+        ];
+        let (controls, reset) = radio_controls(Some(&attributes), &signals);
+        assert_eq!(
+            controls,
+            [
+                RadioControl {
+                    signal: "session_control_display$abc$more_discovery".into(),
+                    label: "More discovery tracks".into(),
+                },
+                RadioControl {
+                    signal: "session_control_display$def$soul:nl_genre".into(),
+                    label: "Give me more soul".into(),
+                },
+            ]
+        );
+        assert_eq!(reset.as_deref(), Some(RADIO_RESET_SIGNAL));
+    }
+
+    /// The applied options are the playlist's own selection, split where
+    /// Spotify separates them.
+    #[test]
+    fn applied_radio_options_come_from_the_playlist_attributes() {
+        let attributes = ListAttributes {
+            format_attributes: vec![format_attribute(RADIO_SELECTED, " one , , two ")],
+            ..Default::default()
+        };
+        assert_eq!(applied_signals(Some(&attributes)), ["one", "two"]);
+        assert!(applied_signals(None).is_empty());
+    }
+
+    /// A playlist's options and applied selection come from the same header
+    /// a radio's do, which is how Discover Weekly offers its genres.
+    #[test]
+    fn a_playlist_options_and_selection_come_from_its_header() {
+        let selected = "session_control_display$list$indie_pop:nl_genre";
+        let content = SelectedListContent {
+            attributes: protobuf::MessageField::some(ListAttributes {
+                format_attributes: vec![
+                    format_attribute(
+                        "session_control_display.displayName.indie_pop:nl_genre",
+                        "Give me more indie pop",
+                    ),
+                    format_attribute(RADIO_SELECTED, selected),
+                ],
+                ..Default::default()
+            }),
+            contents: protobuf::MessageField::some(ListItems {
+                available_signals: vec![
+                    signal(selected),
+                    signal("session_control_display$list$jazz:nl_genre"),
+                    signal(RADIO_RESET_SIGNAL),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let state = playlist_signal_state(&content);
+        assert_eq!(
+            state.controls,
+            [RadioControl {
+                signal: selected.into(),
+                label: "Give me more indie pop".into(),
+            }],
+            "a signal without wording is not offered"
+        );
+        assert_eq!(state.reset.as_deref(), Some(RADIO_RESET_SIGNAL));
+        assert_eq!(state.selected, [selected]);
+    }
+
+    /// A radio playlist lists songs by URI, each once and in order; anything
+    /// that is not a song is left out.
+    #[test]
+    fn a_radio_playlist_lists_each_song_once_in_order() {
+        let item = |uri: &str| Item {
+            uri: Some(uri.into()),
+            ..Default::default()
+        };
+        let contents = ListItems {
+            pos: Some(0),
+            truncated: Some(false),
+            items: vec![
+                item("spotify:track:3JA9Jsuxr4xgHXEawAdCp4"),
+                item("spotify:episode:3JA9Jsuxr4xgHXEawAdCp4"),
+                item("spotify:track:3JA9Jsuxr4xgHXEawAdCp4"),
+                item("spotify:track:4uLU6hMCjMI75M1A2tKUQC"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            radio_uris(&contents)
+                .iter()
+                .map(SpotifyUri::to_uri)
+                .collect::<Vec<_>>(),
+            [
+                "spotify:track:3JA9Jsuxr4xgHXEawAdCp4",
+                "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            ]
+        );
+    }
+
     const STATION_SEED_ID: &str = "3JA9Jsuxr4xgHXEawAdCp4";
     const STATION_SEED: &str = "spotify:track:3JA9Jsuxr4xgHXEawAdCp4";
     const STATION_OTHER: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
@@ -3145,6 +3614,25 @@ mod tests {
                 &station,
                 &[STATION_OTHER, STATION_SEED, STATION_OTHER, STATION_THIRD]
             ),
+            [STATION_SEED, STATION_OTHER, STATION_THIRD]
+        );
+    }
+
+    /// Spotify names a song radio's playlist by the song's own URI, so the
+    /// seed is a URI rather than a station and still starts the list.
+    #[test]
+    fn a_radio_playlist_keeps_a_song_seed_first() {
+        let parse = |uri: &str| SpotifyUri::from_uri(uri).unwrap();
+        let ordered = seed_first(
+            STATION_SEED,
+            vec![
+                parse(STATION_OTHER),
+                parse(STATION_SEED),
+                parse(STATION_THIRD),
+            ],
+        );
+        assert_eq!(
+            ordered.iter().map(SpotifyUri::to_uri).collect::<Vec<_>>(),
             [STATION_SEED, STATION_OTHER, STATION_THIRD]
         );
     }

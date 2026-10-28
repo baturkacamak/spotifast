@@ -126,9 +126,18 @@ clients. Spotifast uses its session for:
   hidden song and playlist, as Spotify's apps keep it. It is read once per
   playback session and written only when you hide or show a song. Hidden
   songs are greyed out and left out of what plays from that playlist.
-- **Radio and autoplay** through Spotify's context resolver: stations seeded
-  by a song, playlist, album, or artist. Each resolution is a fresh mix of 50
-  songs, so a radio page plays the songs it shows rather than asking again.
+- **Radio and autoplay** through Spotify's radio playlists, with the options
+  their own app shows above the songs. The session asks Spotify's
+  seed-to-playlist request which playlist its app opens for a song, album, or
+  artist, and reads its songs and session controls from the playlist service.
+  Options such as "Give me more soul" or "More discovery tracks" are the
+  playlist's signals: choosing one applies it, Spotify regenerates the list,
+  and the page shows and plays that list. Applying an option writes the
+  account's choice; choosing it again clears it. The same options on a
+  playlist page, Discover Weekly and Release Radar among them, are read from
+  its header and applied the same way, after which the page reads the
+  reshaped rows again. A seed Spotify answers with a station, such as a
+  playlist seed, keeps the context resolver's station and has no options.
 - **Audiobook detection** for saved shows, which the Web API lists as podcasts.
 - **Play counts** on album pages and an artist's popular songs, from the
   Pathfinder queries Spotify's own pages make. The Web API has none. When
@@ -147,13 +156,14 @@ clients. Spotifast uses its session for:
 
 Where no public API covers a feature, Spotifast may read the private
 endpoints Spotify's own apps use, through the librespot session. These
-requests only read; the one exception is pre-save on upcoming album pages,
-which writes only when the user presses the button. Requests to Spotify's
-client API go into librespot first: a pull request upstream, carried in
-Spotifast's librespot fork until a librespot release includes it. Pathfinder
-queries, which librespot does not make, stay in Spotifast. Spotify can change
-any of these without notice, so a feature that uses one falls back to the Web
-API where it has an answer, and otherwise leaves out what it could not read.
+requests only read; the exceptions are pre-save on upcoming album pages and a
+radio's session control, which write only when the user presses the button.
+Requests to Spotify's client API go into librespot first: a pull request
+upstream, carried in Spotifast's librespot fork until a librespot release
+includes it. Pathfinder queries, which librespot does not make, stay in
+Spotifast. Spotify can change any of these without notice, so a feature that
+uses one falls back to the Web API where it has an answer, and otherwise
+leaves out what it could not read.
 
 ## librespot playback
 

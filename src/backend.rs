@@ -896,6 +896,27 @@ pub enum Command {
         seed: String,
         generation: u64,
     },
+    /// Apply one of Spotify's radio options, or its reset signal, to the
+    /// playlist the page shows. Answers as `Event::RadioSignal`.
+    RadioSignal {
+        seed: String,
+        generation: u64,
+        playlist: String,
+        signal: String,
+    },
+    /// Read the options Spotify offers for a playlist, and the ones it has
+    /// applied. Answers as `Event::PlaylistSignals`.
+    PlaylistSignals {
+        id: String,
+        generation: u64,
+    },
+    /// Apply one of a playlist's options, or its reset signal. Answers as
+    /// `Event::PlaylistSignal`.
+    PlaylistSignal {
+        id: String,
+        generation: u64,
+        signal: String,
+    },
     SetPrereleaseSaved {
         uri: String,
         saved: bool,
@@ -931,7 +952,31 @@ pub enum Command {
         session_generation: u64,
         seed: String,
         generation: u64,
-        result: Result<Vec<crate::api::models::Track>, String>,
+        result: Result<session_reads::RadioMix, String>,
+    },
+    /// Internal: a radio option finished applying for the session it started
+    /// in.
+    RadioSignalResolved {
+        session_generation: u64,
+        seed: String,
+        generation: u64,
+        result: Result<session_reads::RadioMix, String>,
+    },
+    /// Internal: a playlist's options were read for the session it started
+    /// in.
+    PlaylistSignalsResolved {
+        session_generation: u64,
+        id: String,
+        generation: u64,
+        result: Result<session_reads::PlaylistSignals, String>,
+    },
+    /// Internal: a playlist option finished applying for the session it
+    /// started in.
+    PlaylistSignalResolved {
+        session_generation: u64,
+        id: String,
+        generation: u64,
+        result: Result<session_reads::PlaylistSignals, String>,
     },
     /// Internal: an audiobook lookup finished for the session it started in.
     AudiobookShowsResolved {
@@ -1088,11 +1133,33 @@ pub enum Event {
     /// The header the streaming session read for a library playlist the
     /// Web API listed blank.
     PlaylistHeader(Box<crate::api::models::Playlist>),
-    /// The songs of the radio seeded by `seed`, for the request `generation`.
+    /// The radio seeded by `seed`, for the request `generation`.
     Radio {
         seed: String,
         generation: u64,
-        result: Result<Vec<crate::api::models::Track>, String>,
+        result: Result<session_reads::RadioMix, String>,
+    },
+    /// The radio after one of its options was applied, for the request
+    /// `generation`. The songs and options shown are replaced only by an
+    /// answer to the newest request.
+    RadioSignal {
+        seed: String,
+        generation: u64,
+        result: Result<session_reads::RadioMix, String>,
+    },
+    /// The options Spotify offers for a playlist, and the ones it has
+    /// applied, for the request `generation`.
+    PlaylistSignals {
+        id: String,
+        generation: u64,
+        result: Result<session_reads::PlaylistSignals, String>,
+    },
+    /// A playlist after one of its options was applied, for the request
+    /// `generation`. The page reads its rows again from Spotify.
+    PlaylistSignal {
+        id: String,
+        generation: u64,
+        result: Result<session_reads::PlaylistSignals, String>,
     },
     Prerelease {
         uri: String,
@@ -2827,6 +2894,62 @@ impl Worker {
                         });
                     }
                 }
+                Command::RadioSignal {
+                    seed,
+                    generation,
+                    playlist,
+                    signal,
+                } => self.start_radio_signal(seed, generation, playlist, signal),
+                Command::RadioSignalResolved {
+                    session_generation,
+                    seed,
+                    generation,
+                    result,
+                } => {
+                    if self.signed_in && session_generation == *self.session.borrow() {
+                        self.emit(Event::RadioSignal {
+                            seed,
+                            generation,
+                            result,
+                        });
+                    }
+                }
+                Command::PlaylistSignals { id, generation } => {
+                    self.start_playlist_signals(id, generation);
+                }
+                Command::PlaylistSignalsResolved {
+                    session_generation,
+                    id,
+                    generation,
+                    result,
+                } => {
+                    if self.signed_in && session_generation == *self.session.borrow() {
+                        self.emit(Event::PlaylistSignals {
+                            id,
+                            generation,
+                            result,
+                        });
+                    }
+                }
+                Command::PlaylistSignal {
+                    id,
+                    generation,
+                    signal,
+                } => self.start_playlist_signal(id, generation, signal),
+                Command::PlaylistSignalResolved {
+                    session_generation,
+                    id,
+                    generation,
+                    result,
+                } => {
+                    if self.signed_in && session_generation == *self.session.borrow() {
+                        self.emit(Event::PlaylistSignal {
+                            id,
+                            generation,
+                            result,
+                        });
+                    }
+                }
                 Command::AudiobookShowsResolved {
                     session_generation,
                     audiobooks,
@@ -4354,11 +4477,11 @@ impl Worker {
                     Some(station) => {
                         match tokio::time::timeout(
                             RADIO_TIMEOUT,
-                            session_reads::station(engine.session(), &station),
+                            session_reads::radio(engine.session(), &seed),
                         )
                         .await
                         {
-                            Ok(Ok(tracks)) => Ok(tracks),
+                            Ok(Ok(mix)) => Ok(mix),
                             Ok(Err(error)) => {
                                 log::warn!("radio {station} failed: {error:#}");
                                 Err("Couldn't load this radio. Try again.".to_string())
@@ -4376,6 +4499,126 @@ impl Worker {
                 });
             });
         }
+    }
+
+    /// Applies one of the radio's options on the streaming session. A signal
+    /// reshapes the playlist, so a request repeated after a lost answer
+    /// leaves the same option chosen; the page takes only the newest answer.
+    fn start_radio_signal(
+        &mut self,
+        seed: String,
+        generation: u64,
+        playlist: String,
+        signal: String,
+    ) {
+        let Some(engine) = self.engine.clone().filter(|_| self.signed_in) else {
+            self.emit(Event::RadioSignal {
+                seed,
+                generation,
+                result: Err(
+                    "Radio options come from playback on this computer. Turn it on in Settings."
+                        .into(),
+                ),
+            });
+            return;
+        };
+        let session_generation = *self.session.borrow();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                RADIO_TIMEOUT,
+                session_reads::radio_signal(engine.session(), &seed, &playlist, &signal),
+            )
+            .await
+            {
+                Ok(Ok(mix)) => Ok(mix),
+                Ok(Err(error)) => {
+                    log::warn!("radio signal {signal} failed: {error:#}");
+                    Err("Spotify couldn't apply that radio option. Try again.".to_string())
+                }
+                Err(_) => Err("Spotify took too long to answer. Try again.".into()),
+            };
+            let _ = commands.send(Command::RadioSignalResolved {
+                session_generation,
+                seed,
+                generation,
+                result,
+            });
+        });
+    }
+
+    /// Reads the options Spotify offers for a playlist through the streaming
+    /// session. Without playback there are none to show.
+    fn start_playlist_signals(&mut self, id: String, generation: u64) {
+        let Some(engine) = self.engine.clone().filter(|_| self.signed_in) else {
+            self.emit(Event::PlaylistSignals {
+                id,
+                generation,
+                result: Err("Playback is off".into()),
+            });
+            return;
+        };
+        let session_generation = *self.session.borrow();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                RADIO_TIMEOUT,
+                session_reads::playlist_signals(engine.session(), &id),
+            )
+            .await
+            {
+                Ok(Ok(state)) => Ok(state),
+                Ok(Err(error)) => {
+                    log::warn!("playlist signals {id} failed: {error:#}");
+                    Err(format!("{error:#}"))
+                }
+                Err(_) => Err("Spotify took too long to answer.".into()),
+            };
+            let _ = commands.send(Command::PlaylistSignalsResolved {
+                session_generation,
+                id,
+                generation,
+                result,
+            });
+        });
+    }
+
+    /// Applies one of a playlist's options on the streaming session.
+    fn start_playlist_signal(&mut self, id: String, generation: u64, signal: String) {
+        let Some(engine) = self.engine.clone().filter(|_| self.signed_in) else {
+            self.emit(Event::PlaylistSignal {
+                id,
+                generation,
+                result: Err(
+                    "Playlist options come from playback on this computer. Turn it on in Settings."
+                        .into(),
+                ),
+            });
+            return;
+        };
+        let session_generation = *self.session.borrow();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                RADIO_TIMEOUT,
+                session_reads::playlist_signal(engine.session(), &id, &signal),
+            )
+            .await
+            {
+                Ok(Ok(state)) => Ok(state),
+                Ok(Err(error)) => {
+                    log::warn!("playlist signal {signal} failed: {error:#}");
+                    Err("Spotify couldn't apply that option. Try again.".to_string())
+                }
+                Err(_) => Err("Spotify took too long to answer. Try again.".into()),
+            };
+            let _ = commands.send(Command::PlaylistSignalResolved {
+                session_generation,
+                id,
+                generation,
+                result,
+            });
+        });
     }
 
     fn remove_playlist_rows(&self, playlist_id: String, rows: Vec<session_reads::RemovedRow>) {

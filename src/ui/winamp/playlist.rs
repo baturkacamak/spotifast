@@ -750,8 +750,58 @@ fn misc_menu(app: &mut App, ui: &mut egui::Ui, rows: &[Row]) {
     }
 }
 
+/// The options Spotify offers for the playlist the player is playing.
+fn mix_menu(app: &mut App, ui: &mut egui::Ui, id: &str) {
+    let locale = app.locale;
+    let Some(state) = app.playing_signals.as_ref().filter(|state| state.id == id) else {
+        ui.add_enabled(
+            false,
+            egui::Button::new(gettext(locale, "Loading options...").as_ref()),
+        );
+        app.actions.push(Action::LoadPlayingSignals);
+        return;
+    };
+    let requested = state.requested;
+    let controls = state.controls.clone();
+    let selected = state.selected.clone();
+    let applying = state.applying;
+    if controls.is_empty() {
+        let text = if requested {
+            gettext(locale, "No options for this playlist")
+        } else {
+            gettext(locale, "Loading options...")
+        };
+        ui.add_enabled(false, egui::Button::new(text.as_ref()));
+        if !requested {
+            app.actions.push(Action::LoadPlayingSignals);
+        }
+        return;
+    }
+    ui.add_enabled_ui(!applying, |ui| {
+        for control in &controls {
+            let active = selected.iter().any(|signal| signal == &control.signal);
+            if ui
+                .selectable_label(active, control.label.as_str())
+                .clicked()
+            {
+                app.actions.push(Action::ApplyPlayingSignal {
+                    signal: control.signal.clone(),
+                });
+                ui.close();
+            }
+        }
+    });
+}
+
 /// Your playlists to play, and the queue kept as a new one.
 fn list_menu(app: &mut App, ui: &mut egui::Ui, rows: &[Row], queue_uris: &[String]) {
+    let locale = app.locale;
+    if let Some(id) = app.playing_playlist_id() {
+        ui.menu_button(gettext(locale, "Mix").as_ref(), |ui| {
+            mix_menu(app, ui, &id);
+        });
+        ui.separator();
+    }
     let playlists: Vec<(String, String)> = app
         .library
         .playlists
@@ -763,7 +813,6 @@ fn list_menu(app: &mut App, ui: &mut egui::Ui, rows: &[Row], queue_uris: &[Strin
                 .collect()
         })
         .unwrap_or_default();
-    let locale = app.locale;
     ui.menu_button(gettext(locale, "Load list").as_ref(), |ui| {
         crate::autoscroll::show(
             ui,

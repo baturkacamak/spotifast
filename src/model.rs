@@ -845,6 +845,21 @@ pub struct PlaylistPage {
     pub playlist: Loadable<Playlist>,
     pub items: PagedList<PlaylistItem>,
     pub filter: String,
+    /// The options Spotify offers above the songs, when it offers any.
+    pub controls: Vec<RadioControl>,
+    /// The signal that clears every applied option, when Spotify offers one.
+    pub reset: Option<String>,
+    /// The options Spotify reports as applied.
+    pub selected: Vec<String>,
+    /// The selection to restore when an apply fails.
+    pub previous_selection: Vec<String>,
+    /// An option is being applied; the rows and options shown stay until it
+    /// answers.
+    pub applying: bool,
+    /// The options were asked for; a page that found none does not ask again.
+    pub signals_checked: bool,
+    /// Identifies the newest option request, so only its answer is adopted.
+    pub signals_generation: u64,
     /// Contributor IDs from loaded pages and a sample of the final page.
     pub contributors: std::collections::BTreeSet<String>,
     /// Whether contributors were sampled from the final page.
@@ -954,6 +969,30 @@ pub struct ArtistPage {
     pub show_all_top: bool,
 }
 
+/// One option Spotify offers above a radio's songs, such as "Give me more
+/// soul". `signal` is the identifier the playlist service applies; `label`
+/// is Spotify's own wording for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RadioControl {
+    pub signal: String,
+    pub label: String,
+}
+
+/// Spotify's options for the playlist the player is playing, which the
+/// Winamp player's menu shows. Loaded when that menu first opens.
+#[derive(Default)]
+pub struct PlayingSignals {
+    pub id: String,
+    pub controls: Vec<RadioControl>,
+    pub reset: Option<String>,
+    pub selected: Vec<String>,
+    pub previous_selection: Vec<String>,
+    pub applying: bool,
+    pub generation: u64,
+    /// The options were asked for; an empty answer is not asked for again.
+    pub requested: bool,
+}
+
 /// A radio page: the songs Spotify mixed for its seed, which are the songs
 /// its Play button plays.
 #[derive(Default)]
@@ -963,6 +1002,20 @@ pub struct RadioPage {
     /// seed's own details be let go while the page stays.
     pub name: Option<String>,
     pub images: Vec<crate::api::models::Image>,
+    /// The Spotify context the songs came from, which the page plays. The
+    /// radio playlist when Spotify offers session controls, else the station.
+    pub uri: Option<String>,
+    /// The options Spotify offers for this mix, in its order.
+    pub controls: Vec<RadioControl>,
+    /// The signal that clears every applied option, when Spotify offers one.
+    pub reset: Option<String>,
+    /// The options Spotify reports as applied.
+    pub selected: Vec<String>,
+    /// The selection to restore when an apply fails.
+    pub previous_selection: Vec<String>,
+    /// An option is being applied; the songs and options shown stay until it
+    /// answers.
+    pub applying: bool,
     /// Identifies the request whose answer may fill `songs`.
     pub generation: u64,
     /// A new mix is on its way; the songs shown stay until it arrives.
@@ -1274,6 +1327,25 @@ pub enum Action {
     SaveQueueAsPlaylist,
     /// Save a radio page's songs to a new playlist, by the seed's URI.
     SaveRadio(String),
+    /// Apply one of a radio's options, or turn the applied one off, by the
+    /// seed's URI and the signal Spotify named.
+    ApplyRadioSignal {
+        seed: String,
+        signal: String,
+    },
+    /// Apply one of a playlist's options, or turn the applied one off, by the
+    /// playlist's id and the signal Spotify named.
+    ApplyPlaylistSignal {
+        id: String,
+        signal: String,
+    },
+    /// Read the options for the playlist the player is playing, for the
+    /// Winamp player's menu.
+    LoadPlayingSignals,
+    /// Apply one of the playing playlist's options, or turn it off.
+    ApplyPlayingSignal {
+        signal: String,
+    },
     /// Hide a song in one of Spotify's playlists, or show it again (#779).
     SetHiddenInPlaylist {
         playlist_uri: String,

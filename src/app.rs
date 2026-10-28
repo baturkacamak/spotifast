@@ -514,6 +514,9 @@ pub struct App {
     pub show_pages: HashMap<String, ShowPage>,
     /// Radio pages by the seed's URI.
     pub radio_pages: HashMap<String, RadioPage>,
+    /// Spotify's options for the playlist the player is playing, shown in the
+    /// Winamp player's menu.
+    pub playing_signals: Option<PlayingSignals>,
     /// Songs the account hid in Spotify's playlists, by playlist URI, as
     /// Spotify's apps hide them with "Hide in this playlist" (#779).
     pub hidden_songs: HashMap<String, HashSet<String>>,
@@ -1169,6 +1172,7 @@ impl App {
             artist_pages: HashMap::new(),
             show_pages: HashMap::new(),
             radio_pages: HashMap::new(),
+            playing_signals: None,
             hidden_songs: HashMap::new(),
             hidden_songs_revision: 0,
             hidden_songs_generation: 0,
@@ -2664,6 +2668,21 @@ impl App {
                     generation,
                     result,
                 } => self.receive_radio(&seed, generation, result),
+                Event::RadioSignal {
+                    seed,
+                    generation,
+                    result,
+                } => self.receive_radio_signal(&seed, generation, result),
+                Event::PlaylistSignals {
+                    id,
+                    generation,
+                    result,
+                } => self.receive_playlist_signals(&id, generation, result),
+                Event::PlaylistSignal {
+                    id,
+                    generation,
+                    result,
+                } => self.receive_playlist_signal(&id, generation, result),
                 Event::Prerelease {
                     uri,
                     generation,
@@ -5212,6 +5231,15 @@ impl App {
                     self.backend.send(Command::LoadPlaylistCache {
                         id: id.clone(),
                         generation,
+                    });
+                }
+                if !page.signals_checked && self.network_reachable {
+                    page.signals_checked = true;
+                    self.load_generation = self.load_generation.wrapping_add(1);
+                    page.signals_generation = self.load_generation;
+                    self.backend.send(Command::PlaylistSignals {
+                        id: id.clone(),
+                        generation: page.signals_generation,
                     });
                 }
                 if self.network_reachable {
@@ -11542,6 +11570,10 @@ impl App {
             Action::ClearQueue => self.clear_queue(),
             Action::SaveQueueAsPlaylist => self.save_queue_as_playlist(),
             Action::SaveRadio(seed) => self.save_radio(&seed),
+            Action::ApplyRadioSignal { seed, signal } => self.apply_radio_signal(&seed, &signal),
+            Action::ApplyPlaylistSignal { id, signal } => self.apply_playlist_signal(&id, &signal),
+            Action::LoadPlayingSignals => self.load_playing_signals(),
+            Action::ApplyPlayingSignal { signal } => self.apply_playing_signal(&signal),
             Action::SetHiddenInPlaylist {
                 playlist_uri,
                 track_uri,
@@ -13683,6 +13715,7 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
 }
 
 mod radio;
+mod session_controls;
 
 #[cfg(test)]
 mod tests {
@@ -23032,6 +23065,19 @@ mod tests {
         );
     }
 
+    /// A radio answer with the songs given and no options, for the tests
+    /// that only care about the songs.
+    fn radio_mix(songs: Vec<Track>) -> crate::session_reads::RadioMix {
+        crate::session_reads::RadioMix {
+            uri: String::new(),
+            name: None,
+            songs,
+            controls: Vec::new(),
+            reset: None,
+            selected: Vec::new(),
+        }
+    }
+
     fn radio_song(id: &str, artist: &str) -> Track {
         Track {
             id: Some(id.into()),
@@ -23155,7 +23201,7 @@ mod tests {
             app.apply(Action::Open(Page::Radio(seed.into())), &ctx);
             let generation = app.radio_pages[seed].generation;
             let songs = vec![radio_song("a", "Björk"), radio_song("b", "Arca")];
-            app.receive_radio(seed, generation, Ok(songs));
+            app.receive_radio(seed, generation, Ok(radio_mix(songs)));
             click_labelled(&ctx, &mut app, seed, "Play");
             assert_eq!(
                 app.queued_play.as_ref().expect("a play request").uris,
@@ -23169,6 +23215,486 @@ mod tests {
             );
             app.backend.shutdown();
         }
+    }
+
+    /// A radio answer that carries Spotify's options, as its playlist does.
+    fn radio_mix_with(
+        uri: &str,
+        songs: Vec<Track>,
+        controls: Vec<crate::model::RadioControl>,
+        selected: Vec<String>,
+    ) -> crate::session_reads::RadioMix {
+        crate::session_reads::RadioMix {
+            uri: uri.into(),
+            name: None,
+            songs,
+            controls,
+            reset: Some(crate::session_reads::RADIO_RESET_SIGNAL.into()),
+            selected,
+        }
+    }
+
+    fn radio_option(signal: &str, label: &str) -> crate::model::RadioControl {
+        crate::model::RadioControl {
+            signal: signal.into(),
+            label: label.into(),
+        }
+    }
+
+    const SOUL_SIGNAL: &str = "session_control_display$2buwwwd8eI6ig2PV1xa5QI$soul:nl_genre";
+    const ROCK_SIGNAL: &str = "session_control_display$3LiuRrANWrpeGfMuENUG04$rock:nl_genre";
+    const RADIO_PLAYLIST: &str = "spotify:playlist:37i9dQZF1E4AaxlmEozmrV";
+
+    /// Opens a song radio whose page has Spotify's two genre options.
+    fn radio_with_options(ctx: &egui::Context) -> (App, String) {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "test".into(),
+        };
+        app.backend.set_offline(true);
+        let seed = "spotify:track:xyz".to_string();
+        app.apply(Action::Open(Page::Radio(seed.clone())), ctx);
+        let generation = app.radio_pages[&seed].generation;
+        app.receive_radio(
+            &seed,
+            generation,
+            Ok(radio_mix_with(
+                RADIO_PLAYLIST,
+                vec![radio_song("a", "Björk"), radio_song("b", "Arca")],
+                vec![
+                    radio_option(SOUL_SIGNAL, "Give me more soul"),
+                    radio_option(ROCK_SIGNAL, "Go deeper into rock"),
+                ],
+                Vec::new(),
+            )),
+        );
+        (app, seed)
+    }
+
+    /// Spotify's own radio pages carry options above the songs. Choosing one
+    /// shows it at once, and the answer replaces the songs with the mix
+    /// Spotify made for it; clicking it again turns it off.
+    #[test]
+    fn a_radio_option_applies_from_its_chip_and_turns_off_from_the_same_chip() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, seed) = radio_with_options(&ctx);
+        let tree = draw_radio(&ctx, &mut app, &seed, Vec::new());
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Give me more soul")),
+            "the page shows Spotify's option"
+        );
+        assert!(app.radio_pages[&seed].selected.is_empty());
+
+        click_labelled(&ctx, &mut app, &seed, "Give me more soul");
+        let page = &app.radio_pages[&seed];
+        assert_eq!(page.selected, [SOUL_SIGNAL], "the choice shows at once");
+        assert!(page.applying, "the apply is on its way");
+        let asked = page.generation;
+
+        let answer = radio_mix_with(
+            RADIO_PLAYLIST,
+            vec![
+                radio_song("soul", "SoulStreet 70"),
+                radio_song("deeper", "Dream FM"),
+            ],
+            vec![
+                radio_option(SOUL_SIGNAL, "Give me more soul"),
+                radio_option(ROCK_SIGNAL, "Go deeper into rock"),
+            ],
+            vec![SOUL_SIGNAL.to_string()],
+        );
+        app.receive_radio_signal(&seed, asked, Ok(answer));
+        let page = &app.radio_pages[&seed];
+        assert!(!page.applying);
+        assert_eq!(
+            page.selected,
+            [SOUL_SIGNAL],
+            "Spotify reports the option still applied"
+        );
+        assert_eq!(
+            page.songs.get().expect("songs")[0].uri,
+            "spotify:track:soul",
+            "the songs are Spotify's mix for the option"
+        );
+
+        click_labelled(&ctx, &mut app, &seed, "Give me more soul");
+        assert!(
+            app.radio_pages[&seed].selected.is_empty(),
+            "the applied option clears at once"
+        );
+    }
+
+    /// An answer to an option chosen earlier cannot undo the one chosen after
+    /// it, however late it arrives.
+    #[test]
+    fn a_late_radio_option_answer_does_not_undo_the_newer_choice() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, seed) = radio_with_options(&ctx);
+
+        click_labelled(&ctx, &mut app, &seed, "Give me more soul");
+        let soul = app.radio_pages[&seed].generation;
+        app.receive_radio_signal(
+            &seed,
+            soul,
+            Ok(radio_mix_with(
+                RADIO_PLAYLIST,
+                vec![radio_song("soul", "SoulStreet 70")],
+                vec![
+                    radio_option(SOUL_SIGNAL, "Give me more soul"),
+                    radio_option(ROCK_SIGNAL, "Go deeper into rock"),
+                ],
+                vec![SOUL_SIGNAL.to_string()],
+            )),
+        );
+
+        click_labelled(&ctx, &mut app, &seed, "Go deeper into rock");
+        let rock = app.radio_pages[&seed].generation;
+        assert_eq!(app.radio_pages[&seed].selected, [ROCK_SIGNAL]);
+
+        // The soul answer arrives again, after the rock choice.
+        app.receive_radio_signal(
+            &seed,
+            soul,
+            Ok(radio_mix_with(
+                RADIO_PLAYLIST,
+                vec![radio_song("late", "Late")],
+                Vec::new(),
+                vec![SOUL_SIGNAL.to_string()],
+            )),
+        );
+        let page = &app.radio_pages[&seed];
+        assert_eq!(page.selected, [ROCK_SIGNAL], "the newer choice stands");
+        assert_eq!(
+            page.songs.get().expect("songs")[0].uri,
+            "spotify:track:soul"
+        );
+        assert!(page.applying, "the rock answer is still on its way");
+
+        app.receive_radio_signal(
+            &seed,
+            rock,
+            Ok(radio_mix_with(
+                RADIO_PLAYLIST,
+                vec![radio_song("rock", "Superblack")],
+                Vec::new(),
+                vec![ROCK_SIGNAL.to_string()],
+            )),
+        );
+        assert_eq!(app.radio_pages[&seed].selected, [ROCK_SIGNAL]);
+        assert_eq!(
+            app.radio_pages[&seed].songs.get().expect("songs")[0].uri,
+            "spotify:track:rock",
+            "the newest answer replaces the songs"
+        );
+    }
+
+    /// A refused option puts back the selection Spotify still has, and says
+    /// why the choice did not take.
+    #[test]
+    fn a_refused_radio_option_puts_the_selection_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, seed) = radio_with_options(&ctx);
+        let generation = app.radio_pages[&seed].generation;
+        app.receive_radio(
+            &seed,
+            generation,
+            Ok(radio_mix_with(
+                RADIO_PLAYLIST,
+                vec![radio_song("a", "Björk")],
+                vec![
+                    radio_option(SOUL_SIGNAL, "Give me more soul"),
+                    radio_option(ROCK_SIGNAL, "Go deeper into rock"),
+                ],
+                vec![ROCK_SIGNAL.to_string()],
+            )),
+        );
+        click_labelled(&ctx, &mut app, &seed, "Give me more soul");
+        let asked = app.radio_pages[&seed].generation;
+        app.receive_radio_signal(
+            &seed,
+            asked,
+            Err("Spotify couldn't apply that radio option. Try again.".into()),
+        );
+        let page = &app.radio_pages[&seed];
+        assert!(!page.applying);
+        assert_eq!(
+            page.selected,
+            [ROCK_SIGNAL],
+            "the previous selection is back"
+        );
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Spotify couldn't apply that radio option. Try again.")
+        );
+    }
+
+    /// A radio backed by Spotify's playlist plays that playlist, so the queue
+    /// names the radio and its songs stay the ones shown.
+    #[test]
+    fn a_radio_with_options_plays_from_its_playlist() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, seed) = radio_with_options(&ctx);
+        click_labelled(&ctx, &mut app, &seed, "Play");
+        assert_eq!(app.playing_context_uri().as_deref(), Some(RADIO_PLAYLIST));
+    }
+
+    /// Draws a playlist page, as the application does, and applies the
+    /// actions it emitted.
+    fn draw_playlist(
+        ctx: &egui::Context,
+        app: &mut App,
+        id: &str,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1240.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| crate::ui::collection::playlist(app, ui, id),
+        );
+        output.textures_delta.clear();
+        app.apply_actions(ctx);
+        output.platform_output.accesskit_update.unwrap()
+    }
+
+    fn click_playlist_labelled(
+        ctx: &egui::Context,
+        app: &mut App,
+        id: &str,
+        label: &str,
+    ) -> egui::accesskit::TreeUpdate {
+        use egui::accesskit::{Action as AccessibleAction, ActionRequest, TreeId};
+        let tree = draw_playlist(ctx, app, id, Vec::new());
+        let id_in_tree = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .unwrap_or_else(|| panic!("a {label} control"))
+            .0;
+        draw_playlist(
+            ctx,
+            app,
+            id,
+            vec![egui::Event::AccessKitActionRequest(ActionRequest {
+                target_tree: TreeId::ROOT,
+                target_node: id_in_tree,
+                action: AccessibleAction::Click,
+                data: None,
+            })],
+        )
+    }
+
+    const DISCOVER_ID: &str = "37i9dQZEVXcGbZ9SuFTBvX";
+    const INDIE_SIGNAL: &str = "session_control_display$list$indie_pop:nl_genre";
+    const JAZZ_SIGNAL: &str = "session_control_display$list$jazz:nl_genre";
+
+    fn playlist_option_state(selected: Vec<String>) -> crate::session_reads::PlaylistSignals {
+        crate::session_reads::PlaylistSignals {
+            controls: vec![
+                radio_option(INDIE_SIGNAL, "Give me more indie pop"),
+                radio_option(JAZZ_SIGNAL, "Make it more jazz"),
+            ],
+            reset: Some(crate::session_reads::RADIO_RESET_SIGNAL.into()),
+            selected,
+            uris: Vec::new(),
+        }
+    }
+
+    /// A playlist page whose options have arrived, like Discover Weekly's.
+    fn playlist_with_options() -> (App, String) {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "test".into(),
+        };
+        app.backend.set_offline(true);
+        let id = DISCOVER_ID.to_string();
+        app.playlist_pages.insert(
+            id.clone(),
+            PlaylistPage {
+                playlist: Loadable::Loaded(crate::api::models::Playlist {
+                    id: id.clone(),
+                    uri: format!("spotify:playlist:{id}"),
+                    name: "Discover Weekly".into(),
+                    ..Default::default()
+                }),
+                signals_checked: true,
+                signals_generation: 7,
+                ..Default::default()
+            },
+        );
+        app.receive_playlist_signals(&id, 7, Ok(playlist_option_state(Vec::new())));
+        (app, id)
+    }
+
+    /// Spotify's playlist pages offer options too, Discover Weekly among
+    /// them. Choosing one shows it at once, and its answer makes the page
+    /// read the reshaped rows again; clicking it again turns it off.
+    #[test]
+    fn a_playlist_option_applies_from_its_chip_and_turns_off() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, id) = playlist_with_options();
+        let tree = draw_playlist(&ctx, &mut app, &id, Vec::new());
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Give me more indie pop")),
+            "the page shows Spotify's option"
+        );
+        assert!(app.playlist_pages[&id].selected.is_empty());
+
+        click_playlist_labelled(&ctx, &mut app, &id, "Give me more indie pop");
+        let page = &app.playlist_pages[&id];
+        assert_eq!(page.selected, [INDIE_SIGNAL], "the choice shows at once");
+        assert!(page.applying, "the apply is on its way");
+        let asked = page.signals_generation;
+
+        app.receive_playlist_signal(
+            &id,
+            asked,
+            Ok(playlist_option_state(vec![INDIE_SIGNAL.to_string()])),
+        );
+        let page = &app.playlist_pages[&id];
+        assert!(!page.applying);
+        assert_eq!(page.selected, [INDIE_SIGNAL]);
+        assert!(
+            page.items.loading,
+            "the rows are read again for the reshaped list"
+        );
+
+        click_playlist_labelled(&ctx, &mut app, &id, "Give me more indie pop");
+        assert!(
+            app.playlist_pages[&id].selected.is_empty(),
+            "the applied option clears at once"
+        );
+        app.backend.shutdown();
+    }
+
+    /// A refused playlist option puts back the selection Spotify still has,
+    /// and says why the choice did not take.
+    #[test]
+    fn a_refused_playlist_option_puts_the_selection_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let (mut app, id) = playlist_with_options();
+        app.receive_playlist_signals(
+            &id,
+            7,
+            Ok(playlist_option_state(vec![JAZZ_SIGNAL.to_string()])),
+        );
+        click_playlist_labelled(&ctx, &mut app, &id, "Give me more indie pop");
+        let asked = app.playlist_pages[&id].signals_generation;
+        app.receive_playlist_signal(
+            &id,
+            asked,
+            Err("Spotify couldn't apply that option. Try again.".into()),
+        );
+        let page = &app.playlist_pages[&id];
+        assert!(!page.applying);
+        assert_eq!(
+            page.selected,
+            [JAZZ_SIGNAL],
+            "the previous selection is back"
+        );
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Spotify couldn't apply that option. Try again.")
+        );
+        app.backend.shutdown();
+    }
+
+    fn playing_now(uri: &str, position_ms: u32) -> NowPlaying {
+        NowPlaying {
+            local: true,
+            device_name: None,
+            device_kind: None,
+            uri: uri.into(),
+            id: None,
+            title: String::new(),
+            artists: Vec::new(),
+            subtitle: String::new(),
+            album_name: String::new(),
+            album_id: None,
+            show_id: None,
+            art_url: None,
+            art_small: None,
+            duration_ms: 0,
+            position_ms,
+            playing: true,
+            loading: false,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume_percent: 0,
+            can_control: true,
+            can_set_volume: true,
+            is_episode: false,
+            resuming: false,
+        }
+    }
+
+    /// Applying an option for the playlist that is playing replaces the queue
+    /// with Spotify's new list, keeping the song and place already playing.
+    #[test]
+    fn a_playing_playlist_option_reshapes_the_queue_and_keeps_the_song() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "test".into(),
+        };
+        app.backend.set_offline(true);
+        let uri = format!("spotify:playlist:{DISCOVER_ID}");
+        app.assumed_context = Some(AssumedContext {
+            uri: uri.clone(),
+            shuffle: None,
+            at: Instant::now(),
+        });
+        app.frame_now = Some(playing_now("spotify:track:keep", 42_000));
+        app.playing_signals = Some(PlayingSignals {
+            id: DISCOVER_ID.into(),
+            generation: 9,
+            requested: true,
+            selected: vec![INDIE_SIGNAL.into()],
+            ..PlayingSignals::default()
+        });
+        app.receive_playlist_signal(
+            DISCOVER_ID,
+            9,
+            Ok(crate::session_reads::PlaylistSignals {
+                controls: vec![radio_option(INDIE_SIGNAL, "Give me more indie pop")],
+                reset: Some(crate::session_reads::RADIO_RESET_SIGNAL.into()),
+                selected: vec![INDIE_SIGNAL.into()],
+                uris: vec![
+                    "spotify:track:intro".into(),
+                    "spotify:track:keep".into(),
+                    "spotify:track:next".into(),
+                ],
+            }),
+        );
+        let request = app.queued_play.as_ref().expect("the new list plays");
+        assert_eq!(request.context_uri.as_deref(), Some(uri.as_str()));
+        assert_eq!(
+            request.offset_uri.as_deref(),
+            Some("spotify:track:keep"),
+            "the song playing stays the song playing"
+        );
+        assert_eq!(request.position_ms, 42_000);
+        app.backend.shutdown();
     }
 
     const RADIO_SEED_ID: &str = "3JA9Jsuxr4xgHXEawAdCp4";
@@ -23197,7 +23723,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        app.receive_radio(&seed, generation, Ok(songs));
+        app.receive_radio(&seed, generation, Ok(radio_mix(songs)));
         (app, seed, expected)
     }
 
@@ -23242,7 +23768,7 @@ mod tests {
         let generation = app.radio_pages[seed.as_str()].generation;
         let station = format!("spotify:station:track:{RADIO_SEED_ID}");
         let songs = normalized_radio_songs(&station, &[RADIO_THIRD, RADIO_OTHER, seed.as_str()]);
-        app.receive_radio(&seed, generation, Ok(songs));
+        app.receive_radio(&seed, generation, Ok(radio_mix(songs)));
         draw_radio(&ctx, &mut app, &seed, Vec::new());
         let displayed: Vec<String> = app.table_rows[&Page::Radio(seed.clone())]
             .items
@@ -23330,9 +23856,9 @@ mod tests {
         app.apply(Action::Reload(Page::Radio(seed.into())), &ctx);
         let second = app.radio_pages[seed].generation;
         assert_ne!(first, second);
-        app.receive_radio(seed, first, Ok(vec![radio_song("old", "Old")]));
+        app.receive_radio(seed, first, Ok(radio_mix(vec![radio_song("old", "Old")])));
         assert!(matches!(app.radio_pages[seed].songs, Loadable::Loading));
-        app.receive_radio(seed, second, Ok(vec![radio_song("new", "New")]));
+        app.receive_radio(seed, second, Ok(radio_mix(vec![radio_song("new", "New")])));
         let songs = app.radio_pages[seed].songs.get().expect("the latest mix");
         assert_eq!(songs[0].uri, "spotify:track:new");
         assert!(app.track_cache.contains_key("new"));
@@ -23352,7 +23878,11 @@ mod tests {
         let seed = "spotify:artist:art1";
         app.apply(Action::Open(Page::Radio(seed.into())), &ctx);
         let generation = app.radio_pages[seed].generation;
-        app.receive_radio(seed, generation, Ok(vec![radio_song("old", "Old")]));
+        app.receive_radio(
+            seed,
+            generation,
+            Ok(radio_mix(vec![radio_song("old", "Old")])),
+        );
         let rows = |app: &mut App| {
             draw_radio(&ctx, app, seed, Vec::new());
             app.table_rows[&Page::Radio(seed.into())].items[0]
@@ -23366,7 +23896,7 @@ mod tests {
         assert!(app.radio_pages[seed].refreshing);
         assert_eq!(rows(&mut app), "spotify:track:old", "the old mix stays");
         let asked = app.radio_pages[seed].generation;
-        app.receive_radio(seed, asked, Ok(vec![radio_song("new", "New")]));
+        app.receive_radio(seed, asked, Ok(radio_mix(vec![radio_song("new", "New")])));
         assert!(!app.radio_pages[seed].refreshing);
         assert_eq!(
             rows(&mut app),
@@ -23535,7 +24065,10 @@ mod tests {
         app.receive_radio(
             seed,
             generation,
-            Ok(vec![radio_song("b", "Camel"), radio_song("a", "Yes")]),
+            Ok(radio_mix(vec![
+                radio_song("b", "Camel"),
+                radio_song("a", "Yes"),
+            ])),
         );
         let tree = draw_radio(&ctx, &mut app, seed, Vec::new());
         assert_eq!(

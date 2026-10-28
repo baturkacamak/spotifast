@@ -1785,6 +1785,14 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
             } else {
                 actions_row(app, ui, actions, Some(&mut page.filter));
             }
+            widgets::session_controls(
+                app,
+                ui,
+                widgets::SessionScope::Playlist(id),
+                &page.controls,
+                &page.selected,
+                page.applying,
+            );
             if page.items.base_offset > 0 && !page.filter.trim().is_empty() {
                 app.actions
                     .push(Action::LoadMore(Page::Playlist(id.to_string())));
