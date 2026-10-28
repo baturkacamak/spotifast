@@ -78,7 +78,8 @@ the listener count. Clicking it opens the Jam window under the player: who is
 listening, the link, and the buttons to copy it or end the Jam. It is built
 from the playlist's own title bar and borders, so it matches the equalizer and
 the playlist in any skin, and its shade button rolls it up to a one-line bar
-with the count, like theirs. Its X closes the window only, not the Jam; the
+that names who is listening, and says so for a moment when someone joins or
+leaves. Its X closes the window only, not the Jam; the
 music and the session carry on, and the badge stays lit. The listener count in
 the submenu opens the same window.
 

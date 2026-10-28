@@ -876,15 +876,17 @@ fn jam_badge(app: &mut App, view: &mut View) {
         Some(count) => format!("JAM {count}"),
         None => "JAM".to_string(),
     };
-    let mut left = area.x;
-    if hosting.is_some() {
+    let dot = hosting.is_some();
+    let width = label.chars().count() as u32 * 5;
+    let left = (area.x + area.width).saturating_sub(width + if dot { 7 } else { 2 });
+    if dot {
         let [r, g, b] = view.skin.playlist.current;
         view.fill(left, area.y + 5, 3, 3, Color32::from_rgb(r, g, b));
-        left += 5;
     }
+    let text = left + if dot { 5 } else { 0 };
     view.text(
         &label,
-        Area::new(left, area.y + 3, area.width - (left - area.x), 6),
+        Area::new(text, area.y + 3, area.x + area.width - text, 6),
     );
     let response = response.on_hover_text(gettext(app.locale, "Jam").as_ref());
     if response.clicked() {

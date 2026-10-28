@@ -591,6 +591,9 @@ pub struct App {
     /// The Jam this account hosts, and whether its panel is open. The panel
     /// takes the right panel's place like the others.
     pub jam: crate::jam::State,
+    /// The last listener who joined or left, for the mini player's shade
+    /// bar, and when it was said.
+    pub jam_notice: Option<(String, Instant)>,
     pub show_jam_panel: bool,
     /// Bumped when a Jam is started, so a late answer for an older one
     /// cannot replace the session shown.
@@ -1219,6 +1222,7 @@ impl App {
             friends_fetched_at: None,
             friends_generation: 0,
             jam: crate::jam::State::Idle,
+            jam_notice: None,
             show_jam_panel: false,
             jam_generation: 0,
             lyrics_fullscreen: None,
@@ -3081,6 +3085,7 @@ impl App {
         // A Jam belongs to the signed-out account, and its device is gone;
         // an answer still on its way is dropped.
         self.jam = crate::jam::State::Idle;
+        self.jam_notice = None;
         self.show_jam_panel = false;
         self.jam_generation += 1;
         // Answers still on their way belong to the signed-out account's
@@ -3796,10 +3801,10 @@ impl App {
                     .iter()
                     .filter(|member| !before.iter().any(|old| old.username == member.username))
                 {
-                    self.toast(
-                        gettext(self.locale, "{name} joined the Jam")
-                            .replace("{name}", member.display_name()),
-                    );
+                    let said = gettext(self.locale, "{name} joined the Jam")
+                        .replace("{name}", member.display_name());
+                    self.jam_notice = Some((said.clone(), Instant::now()));
+                    self.toast(said);
                 }
                 for member in before.iter().filter(|old| {
                     !session
@@ -3807,16 +3812,17 @@ impl App {
                         .iter()
                         .any(|member| member.username == old.username)
                 }) {
-                    self.toast(
-                        gettext(self.locale, "{name} left the Jam")
-                            .replace("{name}", member.display_name()),
-                    );
+                    let said = gettext(self.locale, "{name} left the Jam")
+                        .replace("{name}", member.display_name());
+                    self.jam_notice = Some((said.clone(), Instant::now()));
+                    self.toast(said);
                 }
                 self.jam = crate::jam::State::Hosting(session);
             }
             crate::jam::Update::Refreshed(Ok(None)) => {
                 if matches!(self.jam, crate::jam::State::Hosting(_)) {
                     self.jam = crate::jam::State::Idle;
+                    self.jam_notice = None;
                 }
             }
             // A failed poll keeps the session already shown; only the
@@ -3824,6 +3830,7 @@ impl App {
             crate::jam::Update::Refreshed(Err(_)) => {}
             crate::jam::Update::Ended(Ok(())) => {
                 self.jam = crate::jam::State::Idle;
+                self.jam_notice = None;
             }
             crate::jam::Update::Ended(Err(error)) => {
                 // Spotify refused to end it, so it is still there: show it
@@ -21154,6 +21161,11 @@ mod tests {
             app.toasts
                 .iter()
                 .any(|toast| toast.message.contains("Ayşe") && toast.message.contains("joined"))
+        );
+        assert!(
+            app.jam_notice
+                .as_ref()
+                .is_some_and(|(said, _)| said.contains("Ayşe") && said.contains("joined"))
         );
         let said = app.toasts.len();
         app.receive_jam(

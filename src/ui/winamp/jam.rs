@@ -176,7 +176,7 @@ pub(super) fn shade(app: &mut App, view: &mut View, focused: bool) {
     view.sprite_at(PLAYLIST_SHADE_LEFT, 0, 0);
     let run = Area::new(25, 0, width - 75, height);
     let mut x = 25;
-    while x < width - 75 {
+    while x < width - 50 {
         view.sprite_clipped(PLAYLIST_SHADE_TILE, x, 0, run);
         x += 25;
     }
@@ -187,12 +187,13 @@ pub(super) fn shade(app: &mut App, view: &mut View, focused: bool) {
     };
     view.sprite_at(right, width - 50, 0);
 
-    let count = app.jam.session().map(|session| session.members.len());
-    let heading = match count {
-        Some(count) => format!("JAM {}", count.max(1)),
-        None => "JAM".to_string(),
-    };
-    view.text(&heading, Area::new(5, 4, width - 60, 6));
+    let heading = shade_text(app);
+    let area = Area::new(5, 4, width - 60, 6);
+    if heading.chars().all(crate::skin::font::covered) {
+        view.text(&heading, area);
+    } else {
+        super::pixel_line(app, view, &heading, Area::new(5, 2, width - 60, 9));
+    }
 
     let title = view.interact(
         Area::new(0, 0, width, height),
@@ -224,6 +225,28 @@ pub(super) fn shade(app: &mut App, view: &mut View, focused: bool) {
     {
         app.actions.push(Action::ToggleWinampJam);
     }
+}
+
+/// What the shade bar says: a listener arriving or leaving for a moment,
+/// then who is in the Jam, and just "JAM" when there is no session.
+fn shade_text(app: &App) -> String {
+    let Some(session) = app.jam.session() else {
+        return "JAM".to_string();
+    };
+    if let Some((text, at)) = &app.jam_notice
+        && at.elapsed() < std::time::Duration::from_secs(8)
+    {
+        return text.clone();
+    }
+    if session.members.is_empty() {
+        return format!("JAM {}", session.members.len().max(1));
+    }
+    session
+        .members
+        .iter()
+        .map(|member| member.display_name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A Winamp button in the playlist's colours: the label centred in a
