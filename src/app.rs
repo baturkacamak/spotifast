@@ -588,6 +588,13 @@ pub struct App {
     /// Bumped when the account changes, so an answer for the last one is
     /// dropped.
     friends_generation: u64,
+    /// The Jam this account hosts, and whether its panel is open. The panel
+    /// takes the right panel's place like the others.
+    pub jam: crate::jam::State,
+    pub show_jam_panel: bool,
+    /// Bumped when a Jam is started, so a late answer for an older one
+    /// cannot replace the session shown.
+    jam_generation: u64,
     pub lyrics_fullscreen: Option<bool>,
     pub lyrics_fullscreen_seen: bool,
     lyrics_fullscreen_restoring: Option<bool>,
@@ -1211,6 +1218,9 @@ impl App {
             friends_in_flight: false,
             friends_fetched_at: None,
             friends_generation: 0,
+            jam: crate::jam::State::Idle,
+            show_jam_panel: false,
+            jam_generation: 0,
             lyrics_fullscreen: None,
             lyrics_fullscreen_seen: false,
             lyrics_fullscreen_restoring: None,
@@ -2651,6 +2661,7 @@ impl App {
                 Event::FriendActivity { generation, result } => {
                     self.receive_friends(generation, result)
                 }
+                Event::Jam { generation, update } => self.receive_jam(generation, update),
                 Event::UserName { id, name, image } => {
                     self.set_user_name(id.clone(), name);
                     self.set_user_image(id, image);
@@ -3067,6 +3078,11 @@ impl App {
         self.friends_in_flight = false;
         self.friends_fetched_at = None;
         self.friends_generation += 1;
+        // A Jam belongs to the signed-out account, and its device is gone;
+        // an answer still on its way is dropped.
+        self.jam = crate::jam::State::Idle;
+        self.show_jam_panel = false;
+        self.jam_generation += 1;
         // Answers still on their way belong to the signed-out account's
         // Home.
         self.home = HomeData {
@@ -3712,6 +3728,80 @@ impl App {
                 if !matches!(self.friends, Loadable::Loaded(_)) {
                     self.friends = Loadable::Failed(error);
                 }
+            }
+        }
+    }
+
+    /// Start a Jam. The panel opens at once and shows the starting state,
+    /// so the button answers the click before Spotify does.
+    fn start_jam(&mut self) {
+        if self.jam.busy() {
+            return;
+        }
+        self.jam_generation = self.jam_generation.wrapping_add(1);
+        self.jam = crate::jam::State::Starting;
+        self.show_jam_panel = true;
+        self.show_queue_panel = false;
+        self.show_lyrics_panel = false;
+        self.show_friends_panel = false;
+        self.backend.send(Command::StartJam(self.jam_generation));
+    }
+
+    /// End the Jam. The panel stops showing it at once; if Spotify refuses,
+    /// the answer says why.
+    fn end_jam(&mut self) {
+        if self.jam.busy() {
+            return;
+        }
+        let Some(session) = self.jam.session().cloned() else {
+            return;
+        };
+        self.backend.send(Command::EndJam(
+            self.jam_generation,
+            session.device_id.clone(),
+        ));
+        self.jam = crate::jam::State::Ending(session);
+    }
+
+    fn receive_jam(&mut self, generation: u64, update: crate::jam::Update) {
+        if generation != self.jam_generation {
+            return;
+        }
+        match update {
+            crate::jam::Update::Started(Ok(session)) => {
+                self.jam = crate::jam::State::Hosting(session);
+                self.show_jam_panel = true;
+            }
+            crate::jam::Update::Started(Err(error)) => {
+                self.jam = crate::jam::State::Failed(error.clone());
+                self.toast_error(error);
+            }
+            crate::jam::Update::Refreshed(Ok(Some(session))) => {
+                // A refresh holds the session the listener just started: an
+                // answer from before it must not undo the click.
+                if matches!(self.jam, crate::jam::State::Hosting(_)) {
+                    self.jam = crate::jam::State::Hosting(session);
+                }
+            }
+            crate::jam::Update::Refreshed(Ok(None)) => {
+                if matches!(self.jam, crate::jam::State::Hosting(_)) {
+                    self.jam = crate::jam::State::Idle;
+                }
+            }
+            // A failed poll keeps the session already shown; only the
+            // buttons' own answers report a failure.
+            crate::jam::Update::Refreshed(Err(_)) => {}
+            crate::jam::Update::Ended(Ok(())) => {
+                self.jam = crate::jam::State::Idle;
+            }
+            crate::jam::Update::Ended(Err(error)) => {
+                // Spotify refused to end it, so it is still there: show it
+                // again, ready for another try.
+                self.jam = match std::mem::replace(&mut self.jam, crate::jam::State::Idle) {
+                    crate::jam::State::Ending(session) => crate::jam::State::Hosting(session),
+                    _ => crate::jam::State::Failed(error.clone()),
+                };
+                self.toast_error(error);
             }
         }
     }
@@ -11596,6 +11686,17 @@ impl App {
                     self.toast(gettext(self.locale, "Link copied"));
                 }
             }
+            Action::CopyJamLink => {
+                if let Some(session) = self.jam.session() {
+                    let link = if session.uri.is_empty() {
+                        session.id.clone()
+                    } else {
+                        session.uri.clone()
+                    };
+                    ctx.copy_text(link);
+                    self.toast(gettext(self.locale, "Link copied"));
+                }
+            }
             Action::CopySongs(items) => {
                 let links: Vec<String> = items
                     .iter()
@@ -11732,6 +11833,7 @@ impl App {
             Action::SignOut => {
                 self.backend.send(Command::SignOut);
                 self.show_friends_panel = false;
+                self.show_jam_panel = false;
                 self.history = vec![Page::Home];
                 self.history_index = 0;
             }
@@ -11744,6 +11846,7 @@ impl App {
                 if self.show_queue_panel {
                     self.show_lyrics_panel = false;
                     self.show_friends_panel = false;
+                    self.show_jam_panel = false;
                     self.refresh_queue(true);
                 }
             }
@@ -11753,6 +11856,7 @@ impl App {
                 if self.show_lyrics_panel {
                     self.show_queue_panel = false;
                     self.show_friends_panel = false;
+                    self.show_jam_panel = false;
                     self.lyrics_following = true;
                     self.request_lyrics();
                 }
@@ -11762,8 +11866,25 @@ impl App {
                 if self.show_friends_panel {
                     self.show_queue_panel = false;
                     self.show_lyrics_panel = false;
+                    self.show_jam_panel = false;
                     self.refresh_friends();
                 }
+            }
+            Action::StartJam => self.start_jam(),
+            Action::EndJam => self.end_jam(),
+            Action::ToggleJamPanel => {
+                self.show_jam_panel = !self.show_jam_panel;
+                if self.show_jam_panel {
+                    self.show_queue_panel = false;
+                    self.show_lyrics_panel = false;
+                    self.show_friends_panel = false;
+                }
+            }
+            Action::ShowJamPanel => {
+                self.show_jam_panel = true;
+                self.show_queue_panel = false;
+                self.show_lyrics_panel = false;
+                self.show_friends_panel = false;
             }
             Action::SetLyricsFullscreen(fullscreen) => {
                 if fullscreen && self.lyrics_fullscreen.is_none() {
@@ -11791,6 +11912,7 @@ impl App {
                         self.show_lyrics_panel = true;
                     }
                     self.show_friends_panel = false;
+                    self.show_jam_panel = false;
                     self.lyrics_following = true;
                     self.lyrics_line_shown = None;
                     self.request_lyrics();
@@ -20886,6 +21008,130 @@ mod tests {
         );
         app.reveal_theme_changes = false;
         app
+    }
+
+    fn jam_session() -> crate::jam::JamSession {
+        crate::jam::JamSession {
+            id: "2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            device_id: "4d13b7e477130477c7f2d4b28919adcb".into(),
+            uri: "spotify:socialsession:2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            join_uri: "hm://social-connect/v2/sessions/join/2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            active: true,
+            owner: true,
+            members: vec![crate::jam::Member {
+                username: "baturkacamak".into(),
+                name: "Batur Kacamak".into(),
+                image: None,
+            }],
+        }
+    }
+
+    /// Starting shows the Jam at once, and a late answer from before the
+    /// click cannot undo it.
+    #[test]
+    fn starting_a_jam_shows_it_before_spotify_answers() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("jam-start");
+        app.show_queue_panel = true;
+        app.apply(Action::StartJam, &ctx);
+        assert!(matches!(app.jam, crate::jam::State::Starting));
+        assert!(app.show_jam_panel && !app.show_queue_panel);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        assert_eq!(
+            app.jam.session().map(|session| session.id.as_str()),
+            Some("2lrq4k8j9oFLl2g4YcBg5Z")
+        );
+        // An answer for an older request is dropped.
+        app.receive_jam(
+            asked.wrapping_add(1),
+            crate::jam::Update::Refreshed(Ok(None)),
+        );
+        assert!(matches!(app.jam, crate::jam::State::Hosting(_)));
+        app.backend.shutdown();
+    }
+
+    /// Ending clears the panel at once; a refusal says why and keeps the
+    /// session out of the way until the listener tries again.
+    #[test]
+    fn ending_a_jam_clears_it_before_spotify_answers() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("jam-end");
+        app.apply(Action::StartJam, &ctx);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        app.apply(Action::EndJam, &ctx);
+        assert!(matches!(app.jam, crate::jam::State::Ending(_)));
+        app.receive_jam(asked, crate::jam::Update::Ended(Ok(())));
+        assert!(matches!(app.jam, crate::jam::State::Idle));
+        // A refusal puts the session back, ready for another try.
+        app.apply(Action::StartJam, &ctx);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        app.apply(Action::EndJam, &ctx);
+        app.receive_jam(asked, crate::jam::Update::Ended(Err("offline".into())));
+        assert!(matches!(app.jam, crate::jam::State::Hosting(_)));
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn a_jam_that_ends_elsewhere_stops_being_shown() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("jam-ended-elsewhere");
+        app.apply(Action::StartJam, &ctx);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        app.receive_jam(asked, crate::jam::Update::Refreshed(Ok(None)));
+        assert!(matches!(app.jam, crate::jam::State::Idle));
+        // A failed poll keeps what is already on screen.
+        app.apply(Action::StartJam, &ctx);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        app.receive_jam(asked, crate::jam::Update::Refreshed(Err("offline".into())));
+        assert!(matches!(app.jam, crate::jam::State::Hosting(_)));
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn the_jam_panel_swaps_places_with_the_other_right_panels() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("jam-panel-swap");
+        app.show_lyrics_panel = true;
+        app.apply(Action::ToggleJamPanel, &ctx);
+        assert!(app.show_jam_panel && !app.show_lyrics_panel);
+        app.apply(Action::ToggleQueuePanel, &ctx);
+        assert!(app.show_queue_panel && !app.show_jam_panel);
+        app.backend.shutdown();
+    }
+
+    /// The Jam panel draws its member list at both a narrow and a normal
+    /// window, with the demo account.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_jam_panel_draws_with_its_members() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = headless_app();
+        app.attach(&ctx);
+        crate::demo::populate(&mut app);
+        app.jam = crate::jam::State::Hosting(jam_session());
+        app.show_jam_panel = true;
+        for width in [760.0, 1200.0] {
+            for _ in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| app.frame_ui(ui),
+                );
+                output.textures_delta.clear();
+            }
+        }
+        app.backend.shutdown();
     }
 
     /// Friend activity takes the right panel's place: opening it closes the

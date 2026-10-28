@@ -874,6 +874,10 @@ pub enum Command {
     /// Read what friends are listening to through the streaming session,
     /// for the app's request generation.
     FriendActivity(u64),
+    /// Create this account's Jam session, hosted by this computer's player.
+    StartJam(u64),
+    /// End the Jam session this computer hosts, by its session device ID.
+    EndJam(u64, String),
     LoadLikedSongsCache {
         generation: u64,
     },
@@ -1113,6 +1117,12 @@ pub enum Event {
     FriendActivity {
         generation: u64,
         result: Result<Vec<session_reads::FriendActivity>, String>,
+    },
+    /// The Jam session this computer hosts started, changed, or ended, for
+    /// the app's request generation.
+    Jam {
+        generation: u64,
+        update: crate::jam::Update,
     },
     /// A user id resolved to a display name and avatar (each `None` when
     /// nothing answers).
@@ -1914,6 +1924,8 @@ struct Worker {
     commands: mpsc::UnboundedSender<Command>,
     waker: Waker,
     engine: Option<Arc<Engine>>,
+    /// The task polling the Jam session this computer hosts, while one runs.
+    jam_watch: Option<tokio::task::JoinHandle<()>>,
     /// What the engine is heard at, so the engine that replaces it starts
     /// there. `engine_config` alone knows only the level the app launched
     /// with.
@@ -2035,6 +2047,7 @@ impl Worker {
             commands,
             waker,
             engine: None,
+            jam_watch: None,
             heard: None,
             rootlist_pending: false,
             album_type_lookup: AlbumTypeLookup::default(),
@@ -2752,6 +2765,8 @@ impl Worker {
                 Command::UserNames(ids) => self.fetch_user_names(ids),
                 Command::PlayCounts(uri) => self.fetch_play_counts(uri),
                 Command::FriendActivity(generation) => self.fetch_friend_activity(generation),
+                Command::StartJam(generation) => self.start_jam(generation),
+                Command::EndJam(generation, device_id) => self.end_jam(generation, device_id),
                 Command::LoadLikedSongsCache { generation } => {
                     if let Some(account) = self.api.account() {
                         let account_id = account.as_str().to_string();
@@ -3535,6 +3550,7 @@ impl Worker {
         self.radio_waiting.clear();
         self.prerelease_waiting = None;
         self.carry_volume();
+        self.stop_jam_watch();
         if let Some(engine) = self.engine.take() {
             engine.shutdown();
         }
@@ -4977,8 +4993,122 @@ impl Worker {
         });
     }
 
-    // ---- api ----------------------------------------------------------------
+    /// Create the account's Jam session and make this computer the device
+    /// playing into it. The same task then keeps the member list current
+    /// until the Jam ends, the listener ends it, or the account changes.
+    fn start_jam(&mut self, generation: u64) {
+        self.stop_jam_watch();
+        let Some(engine) = self.engine.clone() else {
+            self.emit(Event::Jam {
+                generation,
+                update: crate::jam::Update::Started(Err(
+                    "A Jam needs playback on this computer. Turn playback on and try again.".into(),
+                )),
+            });
+            return;
+        };
+        let http = match self.http.client() {
+            Ok(http) => http,
+            Err(error) => {
+                self.emit(Event::Jam {
+                    generation,
+                    update: crate::jam::Update::Started(Err(error)),
+                });
+                return;
+            }
+        };
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        let mut cancelled = self.session.subscribe();
+        let handle = tokio::spawn(async move {
+            let started = tokio::time::timeout(
+                Duration::from_secs(20),
+                crate::jam::start(engine.session(), &http),
+            )
+            .await
+            .map_err(|_| "Spotify took too long to start the Jam.".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            let hosting = started.is_ok();
+            let _ = events.send(Event::Jam {
+                generation,
+                update: crate::jam::Update::Started(started),
+            });
+            waker.wake();
+            if !hosting {
+                return;
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+                let read = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    crate::jam::current(engine.session(), &http),
+                )
+                .await;
+                let update = match read {
+                    Ok(Ok(session)) => crate::jam::Update::Refreshed(Ok(session)),
+                    Ok(Err(error)) => crate::jam::Update::Refreshed(Err(error.to_string())),
+                    Err(_) => crate::jam::Update::Refreshed(Err(
+                        "Spotify took too long to answer.".to_string(),
+                    )),
+                };
+                let ended = matches!(&update, crate::jam::Update::Refreshed(Ok(None)));
+                let _ = events.send(Event::Jam { generation, update });
+                waker.wake();
+                if ended {
+                    break;
+                }
+            }
+        });
+        self.jam_watch = Some(handle);
+    }
 
+    /// End the session this computer hosts. Answers through the same
+    /// generation that started it, so a Jam started afterwards ignores it.
+    fn end_jam(&mut self, generation: u64, device_id: String) {
+        self.stop_jam_watch();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        let send = move |result| {
+            let _ = events.send(Event::Jam {
+                generation,
+                update: crate::jam::Update::Ended(result),
+            });
+            waker.wake();
+        };
+        let Some(engine) = self.engine.clone() else {
+            send(Err("Playback is not running on this computer.".into()));
+            return;
+        };
+        let http = match self.http.client() {
+            Ok(http) => http,
+            Err(error) => {
+                send(Err(error));
+                return;
+            }
+        };
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(15),
+                crate::jam::end(engine.session(), &http, &device_id),
+            )
+            .await
+            .map_err(|_| "Spotify took too long to answer.".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            send(result);
+        });
+    }
+
+    fn stop_jam_watch(&mut self) {
+        if let Some(handle) = self.jam_watch.take() {
+            handle.abort();
+        }
+    }
+
+    // ---- api ----------------------------------------------------------------
     fn cancel_search(&mut self) {
         for task in self.search_tasks.drain(..) {
             task.abort();

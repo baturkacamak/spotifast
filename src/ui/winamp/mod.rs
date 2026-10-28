@@ -15,7 +15,7 @@ use egui::{
 };
 
 use crate::app::{App, NowPlaying};
-use crate::i18n::{Locale, gettext, pgettext};
+use crate::i18n::{Locale, gettext, ngettext, pgettext};
 use crate::model::{Action, Page};
 use crate::player::RepeatMode;
 use crate::settings::VisMode;
@@ -819,11 +819,65 @@ fn options_menu(app: &mut App, ui: &mut Ui, unit: f32) {
         app.actions.push(Action::Open(Page::Settings));
         app.actions.push(Action::ToggleWinampWindow);
     }
+    jam_menu(app, ui, locale);
     if ui.button(gettext(locale, "Big window").as_ref()).clicked() {
         app.actions.push(Action::ToggleWinampWindow);
     }
     if ui.button(gettext(locale, "Quit").as_ref()).clicked() {
         app.actions.push(Action::Quit);
+    }
+}
+
+/// Jam commands in the mini player's own menu, so starting one, copying
+/// its link and ending it need no window switch. The member list opens the
+/// big window's Jam panel, where everyone in the Jam is shown.
+fn jam_menu(app: &mut App, ui: &mut Ui, locale: Locale) {
+    ui.separator();
+    match app.jam.clone() {
+        crate::jam::State::Idle | crate::jam::State::Failed(_) => {
+            if let crate::jam::State::Failed(error) = &app.jam {
+                ui.label(
+                    egui::RichText::new(super::widgets::sanitize_error_message(error, locale))
+                        .small(),
+                );
+            }
+            if ui.button(gettext(locale, "Start a Jam").as_ref()).clicked() {
+                app.actions.push(Action::StartJam);
+            }
+        }
+        crate::jam::State::Starting => {
+            ui.label(gettext(locale, "Starting the Jam…").as_ref());
+        }
+        crate::jam::State::Ending(_) => {
+            ui.label(gettext(locale, "Ending the Jam…").as_ref());
+        }
+        crate::jam::State::Hosting(session) => {
+            let listening = session.members.len() as u32;
+            let label = match listening {
+                0 | 1 => gettext(locale, "Only you, so far").into_owned(),
+                count => ngettext(
+                    locale,
+                    // Translators: {count} is the number of people in the Jam.
+                    "{count} listening",
+                    "{count} listening",
+                    count,
+                )
+                .into_owned(),
+            };
+            if ui.button(label).clicked() {
+                app.actions.push(Action::ShowJamPanel);
+                app.actions.push(Action::ToggleWinampWindow);
+            }
+            if ui
+                .button(gettext(locale, "Copy Jam link").as_ref())
+                .clicked()
+            {
+                app.actions.push(Action::CopyJamLink);
+            }
+            if ui.button(gettext(locale, "End the Jam").as_ref()).clicked() {
+                app.actions.push(Action::EndJam);
+            }
+        }
     }
 }
 

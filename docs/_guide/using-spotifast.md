@@ -702,6 +702,23 @@ The panel needs playback on this computer, since only that session can read
 it. In a very narrow window the people button gives way so the playback
 controls keep their room; widen the window to bring it back.
 
+## Listening together (Jam)
+
+**Jam** in the account menu starts a Jam from this computer and opens its
+panel on the right. The panel lists everyone in the Jam and shows the link to
+share; **Copy Jam link** puts it on the clipboard, and **End the Jam** closes
+the session for everyone. Starting one needs playback on this computer and a
+Premium account, since this computer is the device that plays.
+
+Guests join from their own Spotify apps with the link and add songs to the
+queue from their phones or computers. They do not need Spotifast; their songs
+arrive here as ordinary Connect commands. Keep Spotifast playing while people
+are in the Jam: the host leaving ends it.
+
+Spotifast can host a Jam, not join someone else's. Spotify has no public
+request for either; the panel uses the private session service Spotify's own
+clients use, so it can stop working if Spotify changes it.
+
 ## Sleep while playing
 
 While music plays on this computer, Spotifast keeps it from going to sleep

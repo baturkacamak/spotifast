@@ -3640,6 +3640,43 @@ msgstr ""
 "나 가상 머신의 GPU 가속을 켜세요. 자세한 내용을 보려면 {url}을(를) 여시겠습니"
 "까?"
 
+#: src/ui/jam.rs:22 src/ui/topbar.rs:475
+msgid "Jam"
+msgstr "Jam"
+
+#: src/ui/jam.rs:44 src/ui/winamp/mod.rs:840
+msgid "Start a Jam"
+msgstr "Jam 시작"
+
+#: src/ui/jam.rs:48 src/ui/winamp/mod.rs:848
+msgid "Starting the Jam…"
+msgstr "Jam 시작 중…"
+
+#: src/ui/jam.rs:56 src/ui/winamp/mod.rs:851
+msgid "Ending the Jam…"
+msgstr "Jam 종료 중…"
+
+#: src/ui/jam.rs:96 src/ui/winamp/mod.rs:869
+msgid "Copy Jam link"
+msgstr "Jam 링크 복사"
+
+#: src/ui/jam.rs:100 src/ui/winamp/mod.rs:874
+msgid "End the Jam"
+msgstr "Jam 종료"
+
+#: src/ui/jam.rs:32
+msgid ""
+"Start a Jam and share its link. Everyone who joins can add songs to the "
+"queue this computer plays."
+msgstr "Jam을 시작하고 링크를 공유하세요. 참여한 사람은 누구나 이 컴퓨터의 대기열에 곡을 추가할 수 있습니다."
+
+#. Translators: {count} is the number of people in the Jam.
+#: src/ui/jam.rs:74 src/ui/winamp/mod.rs:857
+#, rust-format
+msgid "{count} person listening"
+msgid_plural "{count} people listening"
+msgstr[0] "{count}명이 함께 듣는 중"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."

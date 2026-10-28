@@ -1358,6 +1358,8 @@ pub enum Action {
     },
     RefreshQueue,
     CopyLink(String),
+    /// Copy the Jam's link, so guests can join from their own devices.
+    CopyJamLink,
     /// Copy picked songs' links, one per line, and remember the songs so a
     /// paste of the same links can show their rows at once.
     CopySongs(Vec<PlayableItem>),
@@ -1416,6 +1418,15 @@ pub enum Action {
     ToggleLyricsPanel,
     /// Show or hide what friends are listening to, in the right panel.
     ToggleFriendsPanel,
+    /// Start a Jam hosted by this computer's player.
+    StartJam,
+    /// End the Jam this computer hosts.
+    EndJam,
+    /// Show or hide the Jam in the right panel.
+    ToggleJamPanel,
+    /// Bring the Jam in the right panel up, without hiding it when it is
+    /// already open (the mini player's menu asks for it).
+    ShowJamPanel,
     SetLyricsFullscreen(bool),
     LyricsLineShown(Option<usize>),
     FollowLyrics,

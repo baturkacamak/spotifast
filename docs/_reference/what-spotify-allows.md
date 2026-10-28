@@ -147,6 +147,11 @@ clients. Spotifast uses its session for:
   request. Spotify may change this response without notice; when the feed
   does not answer, the older buddy list stands in, which reports a song only
   after it ends.
+- **Hosting a Jam.** Spotify keeps a Jam in a private "social connect"
+  session on spclient. The host is a device that plays, and guests add songs
+  to its queue from their own Spotify apps. Spotifast creates that session
+  with the playback grant, shows who is in it and its share link, and ends
+  it again. Joining someone else's Jam is not available (see below).
 - **Google Cast speakers and groups.** librespot has no Cast sender, so
   Spotifast starts Spotify's receiver on the device itself. The session then
   obtains a token for that receiver, as Spotify's own apps do. See
@@ -156,8 +161,9 @@ clients. Spotifast uses its session for:
 
 Where no public API covers a feature, Spotifast may read the private
 endpoints Spotify's own apps use, through the librespot session. These
-requests only read; the exceptions are pre-save on upcoming album pages and a
-radio's session control, which write only when the user presses the button.
+requests only read; the exceptions are pre-save on upcoming album pages, a
+radio's session control, and starting or ending a Jam, which write only when
+the user presses the button.
 Requests to Spotify's client API go into librespot first: a pull request
 upstream, carried in Spotifast's librespot fork until a librespot release
 includes it. Pathfinder queries, which librespot does not make, stay in
@@ -222,10 +228,12 @@ The Web API and librespot do not provide these features:
   support its protocol. Spotifast's pins are local and are stored in
   `settings.json`. See [issue #31](https://github.com/crmne/spotifast/issues/31).
 - **Editing playlist folders.** librespot can only read them.
-- **Smart Shuffle, Jam, Blend, and similar Spotify features.** Spotify
-  generates these for its own clients. Spotifast only has plain shuffle.
-  A Blend that a Spotify app already made opens like any playlist, with
-  who added each song, but Spotifast cannot start or manage one.
+- **Joining someone else's Jam, Smart Shuffle, Blend, and similar Spotify
+  features.** Spotify generates these for its own clients, and the Web API
+  has no request for them. Spotifast can host a Jam (above) but cannot join
+  one from a link, and has only plain shuffle. A Blend that a Spotify app
+  already made opens like any playlist, with who added each song, but
+  Spotifast cannot start or manage one.
 - **Spotify DJ.** Its special playlist context does not expose playable tracks
   to librespot, so Spotifast leaves its card out of Made for you. See
   [librespot issue #1604](https://github.com/librespot-org/librespot/issues/1604).

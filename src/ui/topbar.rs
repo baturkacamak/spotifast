@@ -470,6 +470,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         if super::widgets::menu_item(
                             ui,
                             &palette,
+                            Some(Icon::Radio),
+                            &gettext(locale, "Jam"),
+                        ) {
+                            app.actions.push(Action::ToggleJamPanel);
+                        }
+                        if super::widgets::menu_item(
+                            ui,
+                            &palette,
                             Some(Icon::Settings),
                             &gettext(locale, "Settings"),
                         ) {

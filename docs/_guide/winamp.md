@@ -67,6 +67,18 @@ You can also use the **V** menu. Changes to the equalizer affect the picture;
 turning down the volume does not, even at zero. The display reacts only to
 music playing on this computer.
 
+## Jam
+
+Start a Jam from the **O** menu, the one with Size and Always on top. Its Jam
+entries start one, copy the link to share, show how many people are listening,
+and end it. Starting a Jam and copying its link keep the mini player where it
+is. The entry with the listener count opens the big window's Jam panel, where
+everyone in the Jam is listed.
+
+Guests join from their own Spotify apps, so nobody needs anything extra on
+this computer. This computer plays the music, which means playback has to be
+on here and the account has to be Premium.
+
 ## Playlist
 
 **PL** opens the playlist below the player. It shows the playing song followed

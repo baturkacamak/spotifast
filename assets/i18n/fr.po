@@ -3739,6 +3739,44 @@ msgstr ""
 "graphique ou activez l’accélération GPU de la machine virtuelle. Ouvrir "
 "{url} pour en savoir plus ?"
 
+#: src/ui/jam.rs:22 src/ui/topbar.rs:475
+msgid "Jam"
+msgstr "Jam"
+
+#: src/ui/jam.rs:44 src/ui/winamp/mod.rs:840
+msgid "Start a Jam"
+msgstr "Démarrer un Jam"
+
+#: src/ui/jam.rs:48 src/ui/winamp/mod.rs:848
+msgid "Starting the Jam…"
+msgstr "Démarrage du Jam…"
+
+#: src/ui/jam.rs:56 src/ui/winamp/mod.rs:851
+msgid "Ending the Jam…"
+msgstr "Fin du Jam…"
+
+#: src/ui/jam.rs:96 src/ui/winamp/mod.rs:869
+msgid "Copy Jam link"
+msgstr "Copier le lien du Jam"
+
+#: src/ui/jam.rs:100 src/ui/winamp/mod.rs:874
+msgid "End the Jam"
+msgstr "Terminer le Jam"
+
+#: src/ui/jam.rs:32
+msgid ""
+"Start a Jam and share its link. Everyone who joins can add songs to the "
+"queue this computer plays."
+msgstr "Démarrez un Jam et partagez son lien. Tous ceux qui le rejoignent peuvent ajouter des titres à la file d'attente de cet ordinateur."
+
+#. Translators: {count} is the number of people in the Jam.
+#: src/ui/jam.rs:74 src/ui/winamp/mod.rs:857
+#, rust-format
+msgid "{count} person listening"
+msgid_plural "{count} people listening"
+msgstr[0] "{count} personne à l'écoute"
+msgstr[1] "{count} personnes à l'écoute"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."

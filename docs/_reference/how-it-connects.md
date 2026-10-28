@@ -85,6 +85,13 @@ Spotifast uses separate credentials for Web API access and local playback:
    to disk or logged. If the feed fails, the session's older
    `presence-view/v1/buddylist` stands in.
 
+A **Jam** is the same private surface on a different service. Starting one
+asks `social-connect` on spclient, with the playback session's token, for the
+account's session (`current_or_new`); Spotifast then reads it every five
+seconds to keep the member list current, and ends it with a `DELETE` keyed by
+the session's device ID. Nothing about the Jam is written to disk, and guests'
+songs reach this computer as ordinary Connect commands.
+
 Local playback authorization stays separate from the Web API grants. Its
 browser approval requests only the streaming permission and always shows the
 consent dialog. The playback session uses the account ID verified by a

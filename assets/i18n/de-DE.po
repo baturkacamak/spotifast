@@ -3727,6 +3727,44 @@ msgstr ""
 "Grafiktreiber oder schalte die GPU-Beschleunigung der virtuellen Maschine "
 "ein. {url} öffnen, um mehr zu erfahren?"
 
+#: src/ui/jam.rs:22 src/ui/topbar.rs:475
+msgid "Jam"
+msgstr "Jam"
+
+#: src/ui/jam.rs:44 src/ui/winamp/mod.rs:840
+msgid "Start a Jam"
+msgstr "Jam starten"
+
+#: src/ui/jam.rs:48 src/ui/winamp/mod.rs:848
+msgid "Starting the Jam…"
+msgstr "Jam wird gestartet…"
+
+#: src/ui/jam.rs:56 src/ui/winamp/mod.rs:851
+msgid "Ending the Jam…"
+msgstr "Jam wird beendet…"
+
+#: src/ui/jam.rs:96 src/ui/winamp/mod.rs:869
+msgid "Copy Jam link"
+msgstr "Jam-Link kopieren"
+
+#: src/ui/jam.rs:100 src/ui/winamp/mod.rs:874
+msgid "End the Jam"
+msgstr "Jam beenden"
+
+#: src/ui/jam.rs:32
+msgid ""
+"Start a Jam and share its link. Everyone who joins can add songs to the "
+"queue this computer plays."
+msgstr "Starte eine Jam und teile den Link. Alle, die beitreten, können Songs zur Warteschlange dieses Computers hinzufügen."
+
+#. Translators: {count} is the number of people in the Jam.
+#: src/ui/jam.rs:74 src/ui/winamp/mod.rs:857
+#, rust-format
+msgid "{count} person listening"
+msgid_plural "{count} people listening"
+msgstr[0] "{count} Person hört zu"
+msgstr[1] "{count} Personen hören zu"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."

@@ -3676,6 +3676,43 @@ msgstr ""
 "するか、仮想マシンの GPU アクセラレーションを有効にしてください。詳しくは "
 "{url} を開きますか？"
 
+#: src/ui/jam.rs:22 src/ui/topbar.rs:475
+msgid "Jam"
+msgstr "Jam"
+
+#: src/ui/jam.rs:44 src/ui/winamp/mod.rs:840
+msgid "Start a Jam"
+msgstr "Jamを開始"
+
+#: src/ui/jam.rs:48 src/ui/winamp/mod.rs:848
+msgid "Starting the Jam…"
+msgstr "Jamを開始しています…"
+
+#: src/ui/jam.rs:56 src/ui/winamp/mod.rs:851
+msgid "Ending the Jam…"
+msgstr "Jamを終了しています…"
+
+#: src/ui/jam.rs:96 src/ui/winamp/mod.rs:869
+msgid "Copy Jam link"
+msgstr "Jamのリンクをコピー"
+
+#: src/ui/jam.rs:100 src/ui/winamp/mod.rs:874
+msgid "End the Jam"
+msgstr "Jamを終了"
+
+#: src/ui/jam.rs:32
+msgid ""
+"Start a Jam and share its link. Everyone who joins can add songs to the "
+"queue this computer plays."
+msgstr "Jamを開始してリンクを共有しましょう。参加した人は、このコンピューターのキューに曲を追加できます。"
+
+#. Translators: {count} is the number of people in the Jam.
+#: src/ui/jam.rs:74 src/ui/winamp/mod.rs:857
+#, rust-format
+msgid "{count} person listening"
+msgid_plural "{count} people listening"
+msgstr[0] "{count}人が参加中"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."
