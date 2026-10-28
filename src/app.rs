@@ -12346,6 +12346,14 @@ impl App {
                 self.settings.eq_open = !self.settings.eq_open;
                 self.settings_dirty = true;
             }
+            Action::ShowWinampJam => {
+                self.settings.jam_open = true;
+                self.settings_dirty = true;
+            }
+            Action::ToggleWinampJam => {
+                self.settings.jam_open = !self.settings.jam_open;
+                self.settings_dirty = true;
+            }
             Action::ToggleEq => {
                 self.settings.eq_on = !self.settings.eq_on;
                 self.push_eq();

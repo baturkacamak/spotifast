@@ -28,13 +28,14 @@ use crate::winamp::{MAX_SCALE, WinampState};
 use super::widgets::{SliderEvent, wheel_notches};
 
 mod equalizer;
+mod jam;
 mod pixel_text;
 mod playlist;
 
 pub use pixel_text::PixelText;
 
-/// The stack's height in skin pixels: the main window, and the equalizer
-/// and the playlist under it, whichever are open.
+/// The stack's height in skin pixels: the main window, and the equalizer,
+/// the playlist and the Jam under it, whichever are open.
 fn stack_height(settings: &crate::settings::Settings) -> u32 {
     let mut height = if settings.winamp_shaded {
         layout::SHADE_HEIGHT
@@ -56,6 +57,9 @@ fn stack_height(settings: &crate::settings::Settings) -> u32 {
                 .playlist_height
                 .clamp(layout::PLAYLIST_MIN_HEIGHT, layout::PLAYLIST_MAX_HEIGHT)
         };
+    }
+    if settings.jam_open {
+        height += layout::JAM_HEIGHT;
     }
     height
 }
@@ -385,6 +389,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         };
     }
     if app.settings.playlist_open {
+        let height = if app.settings.playlist_shaded {
+            layout::PLAYLIST_SHADE_HEIGHT
+        } else {
+            app.settings
+                .playlist_height
+                .clamp(layout::PLAYLIST_MIN_HEIGHT, layout::PLAYLIST_MAX_HEIGHT)
+        };
         let mut below = View {
             ui: view.ui,
             origin: origin + vec2(0.0, below_y as f32 * unit),
@@ -394,6 +405,18 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             mask: None,
         };
         playlist::show(app, &mut below, now.as_ref(), focused);
+        below_y += height;
+    }
+    if app.settings.jam_open {
+        let mut below = View {
+            ui: view.ui,
+            origin: origin + vec2(0.0, below_y as f32 * unit),
+            unit,
+            skin: &skin,
+            textures: &textures,
+            mask: None,
+        };
+        jam::show(app, &mut below);
     }
 
     if vis_moving {
@@ -857,8 +880,7 @@ fn jam_badge(app: &mut App, view: &mut View) {
     );
     let response = response.on_hover_text(gettext(app.locale, "Jam").as_ref());
     if response.clicked() {
-        app.actions.push(Action::ShowJamPanel);
-        app.actions.push(Action::ToggleWinampWindow);
+        app.actions.push(Action::ShowWinampJam);
     }
 }
 
@@ -894,16 +916,16 @@ fn jam_items(app: &mut App, ui: &mut Ui, locale: Locale) {
         }
         crate::jam::State::Hosting(session) => {
             let listening = session.members.len() as u32;
-            ui.label(
-                ngettext(
-                    locale,
-                    // Translators: {count} is the number of people in the Jam.
-                    "{count} person listening",
-                    "{count} people listening",
-                    listening,
-                )
-                .as_ref(),
+            let label = ngettext(
+                locale,
+                // Translators: {count} is the number of people in the Jam.
+                "{count} person listening",
+                "{count} people listening",
+                listening,
             );
+            if ui.button(label.as_ref()).clicked() {
+                app.actions.push(Action::ShowWinampJam);
+            }
             for member in &session.members {
                 ui.label(member.display_name());
             }
@@ -1729,6 +1751,17 @@ fn shuffle_repeat(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_jam_window_adds_its_height_to_the_stack() {
+        let mut settings = crate::settings::Settings::default();
+        let base = super::stack_height(&settings);
+        settings.jam_open = true;
+        assert_eq!(
+            super::stack_height(&settings),
+            base + crate::skin::layout::JAM_HEIGHT
+        );
+    }
+
     use super::*;
 
     fn now(title: &str, subtitle: &str, duration_ms: u32) -> NowPlaying {

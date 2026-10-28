@@ -100,6 +100,8 @@ pub const PLAYLIST_TRACK_HEIGHT: u32 = 13;
 pub const PLAYLIST_MIN_HEIGHT: u32 = 116;
 /// The playlist rolled up to its title bar.
 pub const PLAYLIST_SHADE_HEIGHT: u32 = 14;
+/// The Jam window under the playlist, in skin pixels.
+pub const JAM_HEIGHT: u32 = 120;
 pub const PLAYLIST_MAX_HEIGHT: u32 = 116 + 29 * 20;
 pub const PLAYLIST_RESIZE_STEP: u32 = 29;
 /// The title bar's buttons, from the playlist's top left.

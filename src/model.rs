@@ -1427,6 +1427,11 @@ pub enum Action {
     /// Bring the Jam in the right panel up, without hiding it when it is
     /// already open (the mini player's menu asks for it).
     ShowJamPanel,
+    /// Show the Jam window under the mini player, without hiding it when it
+    /// is already open.
+    ShowWinampJam,
+    /// Show or hide the Jam window under the mini player.
+    ToggleWinampJam,
     SetLyricsFullscreen(bool),
     LyricsLineShown(Option<usize>),
     FollowLyrics,

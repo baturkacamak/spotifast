@@ -70,10 +70,17 @@ music playing on this computer.
 ## Jam
 
 Start a Jam from the **O** menu, the one with Size and Always on top. Its Jam
-entries start one, copy the link to share, show how many people are listening,
-and end it. Starting a Jam copies its link at the same time, so it is ready to
-paste, and keeps the mini player where it is. The entry with the listener count opens the big window's Jam panel, where
-everyone in the Jam is listed.
+submenu lists who is in the Jam and offers **Copy Jam link** and **End the
+Jam**; starting one copies its link at the same time, so it is ready to paste.
+
+While a Jam runs, the strip beside the bitrate shows a small **JAM** badge with
+the listener count. Clicking it opens the Jam window under the player: who is
+listening, the link, and the buttons to copy it or end the Jam. Its X closes
+the window only, not the Jam; the music and the session carry on, and the badge
+stays lit. The listener count in the submenu opens the same window.
+
+Someone joining or leaving is announced for a moment in the player's scrolling
+line, the one that usually shows the song.
 
 Guests join from their own Spotify apps, so nobody needs anything extra on
 this computer. This computer plays the music, which means playback has to be

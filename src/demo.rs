@@ -6903,6 +6903,49 @@ mod tests {
     /// and its local-audio-only behaviour inside the skin's tiny display.
     #[cfg(feature = "demo")]
     #[test]
+    fn the_jam_window_draws_its_members_and_buttons() {
+        let (ctx, mut app) = accessible_app("winamp-jam-window");
+        app.backend.set_offline(true);
+        apply_flags(&mut app, None, Some("winamp-bars"));
+        app.settings.jam_open = true;
+        app.jam = crate::jam::State::Hosting(crate::jam::JamSession {
+            id: "2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            device_id: "4d13b7e477130477c7f2d4b28919adcb".into(),
+            uri: "spotify:socialsession:2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            join_uri: "hm://social-connect/v2/sessions/join/2lrq4k8j9oFLl2g4YcBg5Z".into(),
+            active: true,
+            owner: true,
+            members: vec![
+                crate::jam::Member {
+                    username: "baturkacamak".into(),
+                    name: "Batur Kacamak".into(),
+                    image: None,
+                },
+                crate::jam::Member {
+                    username: "ayse".into(),
+                    name: "Ayşe Yılmaz".into(),
+                    image: None,
+                },
+            ],
+        });
+        let size = crate::ui::winamp::window_size(&app.settings, 2.0);
+        let mut frame = 0;
+        for _ in 0..2 {
+            frame += 1;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(f64::from(frame) / 60.0),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| crate::ui::winamp::show(&mut app, ui),
+            );
+            output.textures_delta.clear();
+        }
+        app.backend.shutdown();
+    }
+
+    #[test]
     fn the_collapsed_winamp_visualizer_draws_and_repaints_only_while_moving() {
         use crate::settings::VisMode;
         let (ctx, mut app) = accessible_app("winamp-shade-vis");
