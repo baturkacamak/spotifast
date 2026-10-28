@@ -3771,6 +3771,10 @@ impl App {
             crate::jam::Update::Started(Ok(session)) => {
                 self.jam = crate::jam::State::Hosting(session);
                 self.show_jam_panel = true;
+                // Starting a Jam is almost always followed by sharing it,
+                // so the link is on the clipboard before the panel even
+                // draws.
+                self.actions.push(Action::CopyJamLink);
             }
             crate::jam::Update::Started(Err(error)) => {
                 self.jam = crate::jam::State::Failed(error.clone());

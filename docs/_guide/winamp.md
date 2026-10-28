@@ -71,8 +71,8 @@ music playing on this computer.
 
 Start a Jam from the **O** menu, the one with Size and Always on top. Its Jam
 entries start one, copy the link to share, show how many people are listening,
-and end it. Starting a Jam and copying its link keep the mini player where it
-is. The entry with the listener count opens the big window's Jam panel, where
+and end it. Starting a Jam copies its link at the same time, so it is ready to
+paste, and keeps the mini player where it is. The entry with the listener count opens the big window's Jam panel, where
 everyone in the Jam is listed.
 
 Guests join from their own Spotify apps, so nobody needs anything extra on
