@@ -65,6 +65,9 @@ areas! {
     MARQUEE = (111, 27, 154, 6);
     KBPS = (111, 43, 15, 6);
     KHZ = (156, 43, 10, 6);
+    /// The strip between the bitrate and MONO/STEREO, where the Jam badge
+    /// sits: skin backgrounds leave it empty.
+    JAM_BADGE = (166, 41, 46, 12);
     VISUALIZER = (24, 43, 76, 16);
     MONO = (212, 41, 27, 12);
     STEREO = (239, 41, 29, 12);

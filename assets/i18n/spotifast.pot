@@ -3587,3 +3587,15 @@ msgid "{count} person listening"
 msgid_plural "{count} people listening"
 msgstr[0] ""
 msgstr[1] ""
+
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3817
+#, rust-format
+msgid "{name} joined the Jam"
+msgstr ""
+
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3827
+#, rust-format
+msgid "{name} left the Jam"
+msgstr ""

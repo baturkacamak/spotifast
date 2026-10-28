@@ -3777,6 +3777,18 @@ msgid_plural "{count} people listening"
 msgstr[0] "{count} personne à l'écoute"
 msgstr[1] "{count} personnes à l'écoute"
 
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3817
+#, rust-format
+msgid "{name} joined the Jam"
+msgstr "{name} a rejoint le Jam"
+
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3827
+#, rust-format
+msgid "{name} left the Jam"
+msgstr "{name} a quitté le Jam"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."

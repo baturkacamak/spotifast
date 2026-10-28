@@ -424,6 +424,7 @@ fn full_window(
     let vis_moving = visualiser(app, view, now, layout::VISUALIZER);
     marquee(app, view, now);
     rates(app, view, now);
+    jam_badge(app, view);
     sliders(app, view, now);
     windows_buttons(app, view);
     transport(app, view, now);
@@ -538,8 +539,9 @@ fn shade_bar(
         app.actions.push(Action::ToggleWinampShade);
     }
     let unit = view.unit;
-    menu(egui::Popup::context_menu(&title), view.skin, unit, |ui| {
-        options_menu(app, ui, unit);
+    let skin = view.skin;
+    menu(egui::Popup::context_menu(&title), skin, unit, |ui| {
+        options_menu(app, ui, skin, unit);
     });
     let big_window = if cfg!(target_os = "macos") {
         gettext(app.locale, "Back to the big window (Cmd+Shift+M)")
@@ -707,8 +709,9 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
         app.actions.push(Action::ToggleWinampShade);
     }
     let unit = view.unit;
-    menu(egui::Popup::context_menu(&title), view.skin, unit, |ui| {
-        options_menu(app, ui, unit);
+    let skin = view.skin;
+    menu(egui::Popup::context_menu(&title), skin, unit, |ui| {
+        options_menu(app, ui, skin, unit);
     });
     // The logo and the close button lead back to the big window: the mini
     // player is a way of looking at the same app, not a second one to
@@ -769,7 +772,7 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
 
 /// The menu behind a right-click on the title bar and the O of the
 /// clutter bar, sized to the skin so it fits inside the window.
-fn options_menu(app: &mut App, ui: &mut Ui, unit: f32) {
+fn options_menu(app: &mut App, ui: &mut Ui, skin: &Skin, unit: f32) {
     let locale = app.locale;
     let font = menu_font(unit);
     ui.set_min_width(font * 11.0);
@@ -819,7 +822,7 @@ fn options_menu(app: &mut App, ui: &mut Ui, unit: f32) {
         app.actions.push(Action::Open(Page::Settings));
         app.actions.push(Action::ToggleWinampWindow);
     }
-    jam_menu(app, ui, locale);
+    jam_menu(app, ui, skin, unit, locale);
     if ui.button(gettext(locale, "Big window").as_ref()).clicked() {
         app.actions.push(Action::ToggleWinampWindow);
     }
@@ -828,11 +831,49 @@ fn options_menu(app: &mut App, ui: &mut Ui, unit: f32) {
     }
 }
 
-/// Jam commands in the mini player's own menu, so starting one, copying
-/// its link and ending it need no window switch. The member list opens the
-/// big window's Jam panel, where everyone in the Jam is shown.
-fn jam_menu(app: &mut App, ui: &mut Ui, locale: Locale) {
-    ui.separator();
+/// The Jam's badge in the strip between the bitrate and MONO/STEREO: a dot
+/// and the listener count while hosting, a quiet "JAM" otherwise. Clicking
+/// it opens the big window's Jam panel.
+fn jam_badge(app: &mut App, view: &mut View) {
+    let hosting = app
+        .jam
+        .session()
+        .map(|session| session.members.len().max(1));
+    let area = layout::JAM_BADGE;
+    let response = view.interact(area, "jam", Sense::click());
+    let label = match hosting {
+        Some(count) => format!("JAM {count}"),
+        None => "JAM".to_string(),
+    };
+    let mut left = area.x;
+    if hosting.is_some() {
+        let [r, g, b] = view.skin.playlist.current;
+        view.fill(left, area.y + 1, 3, 3, Color32::from_rgb(r, g, b));
+        left += 5;
+    }
+    view.text(
+        &label,
+        Area::new(left, area.y, area.width - (left - area.x), area.height),
+    );
+    let response = response.on_hover_text(gettext(app.locale, "Jam").as_ref());
+    if response.clicked() {
+        app.actions.push(Action::ShowJamPanel);
+        app.actions.push(Action::ToggleWinampWindow);
+    }
+}
+
+/// Jam commands in a submenu of the mini player's own menu, so starting
+/// one, copying its link and ending it need no window switch. The member
+/// list opens the big window's panel.
+fn jam_menu(app: &mut App, ui: &mut Ui, skin: &Skin, unit: f32, locale: Locale) {
+    let label = format!("{} ▸", gettext(locale, "Jam"));
+    let response = ui.button(label);
+    menu(egui::Popup::menu(&response), skin, unit, |ui| {
+        jam_items(app, ui, locale);
+    });
+}
+
+fn jam_items(app: &mut App, ui: &mut Ui, locale: Locale) {
     match app.jam.clone() {
         crate::jam::State::Idle | crate::jam::State::Failed(_) => {
             if let crate::jam::State::Failed(error) = &app.jam {
@@ -853,18 +894,20 @@ fn jam_menu(app: &mut App, ui: &mut Ui, locale: Locale) {
         }
         crate::jam::State::Hosting(session) => {
             let listening = session.members.len() as u32;
-            let label = ngettext(
-                locale,
-                // Translators: {count} is the number of people in the Jam.
-                "{count} person listening",
-                "{count} people listening",
-                listening,
-            )
-            .into_owned();
-            if ui.button(label).clicked() {
-                app.actions.push(Action::ShowJamPanel);
-                app.actions.push(Action::ToggleWinampWindow);
+            ui.label(
+                ngettext(
+                    locale,
+                    // Translators: {count} is the number of people in the Jam.
+                    "{count} person listening",
+                    "{count} people listening",
+                    listening,
+                )
+                .as_ref(),
+            );
+            for member in &session.members {
+                ui.label(member.display_name());
             }
+            ui.separator();
             if ui
                 .button(gettext(locale, "Copy Jam link").as_ref())
                 .clicked()
@@ -973,8 +1016,9 @@ fn clutter_bar(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
         "clutter-o",
     );
     let unit = view.unit;
-    menu(egui::Popup::menu(&options), view.skin, unit, |ui| {
-        options_menu(app, ui, unit);
+    let skin = view.skin;
+    menu(egui::Popup::menu(&options), skin, unit, |ui| {
+        options_menu(app, ui, skin, unit);
     });
     if view
         .lamp_button(

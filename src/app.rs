@@ -3783,9 +3783,36 @@ impl App {
             crate::jam::Update::Refreshed(Ok(Some(session))) => {
                 // A refresh holds the session the listener just started: an
                 // answer from before it must not undo the click.
-                if matches!(self.jam, crate::jam::State::Hosting(_)) {
-                    self.jam = crate::jam::State::Hosting(session);
+                if !matches!(self.jam, crate::jam::State::Hosting(_)) {
+                    return;
                 }
+                let before: Vec<crate::jam::Member> = self
+                    .jam
+                    .session()
+                    .map(|session| session.members.clone())
+                    .unwrap_or_default();
+                for member in session
+                    .members
+                    .iter()
+                    .filter(|member| !before.iter().any(|old| old.username == member.username))
+                {
+                    self.toast(
+                        gettext(self.locale, "{name} joined the Jam")
+                            .replace("{name}", member.display_name()),
+                    );
+                }
+                for member in before.iter().filter(|old| {
+                    !session
+                        .members
+                        .iter()
+                        .any(|member| member.username == old.username)
+                }) {
+                    self.toast(
+                        gettext(self.locale, "{name} left the Jam")
+                            .replace("{name}", member.display_name()),
+                    );
+                }
+                self.jam = crate::jam::State::Hosting(session);
             }
             crate::jam::Update::Refreshed(Ok(None)) => {
                 if matches!(self.jam, crate::jam::State::Hosting(_)) {
@@ -21088,6 +21115,47 @@ mod tests {
         app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
         app.receive_jam(asked, crate::jam::Update::Refreshed(Err("offline".into())));
         assert!(matches!(app.jam, crate::jam::State::Hosting(_)));
+        app.backend.shutdown();
+    }
+
+    /// A listener who arrives or leaves is announced once, not on every
+    /// five-second refresh.
+    #[test]
+    fn listeners_joining_and_leaving_are_announced_once() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("jam-announce");
+        app.locale = crate::i18n::Locale::English;
+        app.apply(Action::StartJam, &ctx);
+        let asked = app.jam_generation;
+        app.receive_jam(asked, crate::jam::Update::Started(Ok(jam_session())));
+        let mut session = jam_session();
+        session.members.push(crate::jam::Member {
+            username: "ayse".into(),
+            name: "Ayşe".into(),
+            image: None,
+        });
+        app.receive_jam(
+            asked,
+            crate::jam::Update::Refreshed(Ok(Some(session.clone()))),
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Ayşe") && toast.message.contains("joined"))
+        );
+        let said = app.toasts.len();
+        app.receive_jam(
+            asked,
+            crate::jam::Update::Refreshed(Ok(Some(session.clone()))),
+        );
+        assert_eq!(app.toasts.len(), said);
+        session.members.retain(|member| member.username != "ayse");
+        app.receive_jam(asked, crate::jam::Update::Refreshed(Ok(Some(session))));
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Ayşe") && toast.message.contains("left"))
+        );
         app.backend.shutdown();
     }
 

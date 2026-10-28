@@ -3763,6 +3763,18 @@ msgstr[0] "{count} человек слушает"
 msgstr[1] "{count} человека слушают"
 msgstr[2] "{count} человек слушают"
 
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3817
+#, rust-format
+msgid "{name} joined the Jam"
+msgstr "{name} присоединился к Jam"
+
+#. Translators: {name} is the display name of someone in the Jam.
+#: src/app.rs:3827
+#, rust-format
+msgid "{name} left the Jam"
+msgstr "{name} покинул Jam"
+
 #~ msgid ""
 #~ "Use a personal Development Mode app for a separate API quota. The shared "
 #~ "app stays active."
