@@ -1551,6 +1551,38 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     _ => {}
                 }
             }
+            "winamp-search"
+            | "winamp-search-loading"
+            | "winamp-search-error"
+            | "winamp-search-empty"
+            | "winamp-search-original" => {
+                app.settings.winamp_window = true;
+                app.settings.skin = None;
+                app.settings.skin_scale = Some(2);
+                app.settings.playlist_open = true;
+                let ctx = egui::Context::default();
+                app.apply(Action::OpenWinampSearch, &ctx);
+                app.apply(Action::WinampSearchQuery("Bonobo".into()), &ctx);
+                app.apply(Action::SubmitWinampSearch, &ctx);
+                let songs: Vec<_> = (0..60)
+                    .map(track)
+                    .filter(|track| track.artists.iter().any(|artist| artist.name == "Bonobo"))
+                    .collect();
+                for song in &songs {
+                    app.track_cache
+                        .insert(song.id.clone().unwrap(), song.clone());
+                }
+                app.winamp.search_tab.songs = match surface {
+                    "winamp-search-loading" => Loadable::Loading,
+                    "winamp-search-error" => Loadable::Failed("Search unavailable".into()),
+                    "winamp-search-empty" => Loadable::Loaded(Vec::new()),
+                    _ => Loadable::Loaded(songs),
+                };
+                app.winamp.search_tab.focus_requested = false;
+                if surface == "winamp-search-original" {
+                    app.apply(Action::ShowWinampRadio(false), &ctx);
+                }
+            }
             "playlist" => app.settings.playlist_open = true,
             "shade" => app.settings.winamp_shaded = true,
             "playlist-shade" => app.settings.playlist_shaded = true,

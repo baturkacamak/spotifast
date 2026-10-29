@@ -74,6 +74,23 @@ pub struct RadioTab {
     pub selection: std::collections::HashSet<usize>,
 }
 
+/// Search results are independent of the main window's search and playback.
+#[derive(Default)]
+pub struct SearchTab {
+    pub open: bool,
+    pub showing: bool,
+    pub return_to_radio: bool,
+    pub query: String,
+    pub committed: String,
+    pub serial: u64,
+    pub songs: crate::model::Loadable<Vec<crate::api::models::Track>>,
+    pub typed_at: Option<Instant>,
+    pub focus_requested: bool,
+    /// While showing, these park the original playlist's view state.
+    pub scroll: usize,
+    pub selection: std::collections::HashSet<usize>,
+}
+
 pub struct WinampState {
     /// The skin on screen.
     pub skin: Arc<Skin>,
@@ -113,6 +130,7 @@ pub struct WinampState {
     /// None follows playback; Some(None) pins a loose list without a context.
     pub playlist_pinned_source: Option<Option<String>>,
     pub radio_tab: Option<RadioTab>,
+    pub search_tab: SearchTab,
     pub playlist_history: Vec<crate::api::models::PlayableItem>,
     pub playlist_cursor: Option<usize>,
     /// The rows selected, by position; Ctrl-click adds and removes, SEL has
@@ -127,6 +145,18 @@ pub struct WinampState {
 }
 
 impl WinampState {
+    /// The collection's scroll is parked while another tab is on screen.
+    pub(crate) fn original_playlist_scroll(&self) -> usize {
+        if self.search_tab.showing {
+            self.search_tab.scroll
+        } else {
+            self.radio_tab
+                .as_ref()
+                .filter(|tab| tab.showing)
+                .map_or(self.playlist_scroll, |tab| tab.scroll)
+        }
+    }
+
     pub fn new(restore_pos: Option<[f32; 2]>, tap: Arc<AudioTap>, eq: crate::eq::SharedEq) -> Self {
         Self {
             skin: Skin::builtin(),
@@ -152,6 +182,7 @@ impl WinampState {
             playlist_source: None,
             playlist_pinned_source: None,
             radio_tab: None,
+            search_tab: SearchTab::default(),
             playlist_history: Vec::new(),
             playlist_cursor: None,
             playlist_selection: std::collections::HashSet::new(),

@@ -302,6 +302,11 @@ pub enum ApiRequest {
         query: String,
         serial: u64,
     },
+    /// The mini player's independent, songs-only search.
+    WinampSearch {
+        query: String,
+        serial: u64,
+    },
     SearchPlaylists {
         query: String,
         serial: u64,
@@ -556,6 +561,11 @@ pub enum ApiResponse {
         query: String,
         serial: u64,
         split: bool,
+    },
+    WinampSearch {
+        query: String,
+        serial: u64,
+        result: ApiResult<Vec<Track>>,
     },
     Search {
         query: String,
@@ -1947,6 +1957,7 @@ struct Worker {
     /// second attempt does not pile up.
     engine_busy: bool,
     search_tasks: Vec<tokio::task::AbortHandle>,
+    winamp_search_task: Option<tokio::task::AbortHandle>,
     /// A user changed engine-affecting settings while the current connection
     /// attempt was in flight. Its result is stale and must not be installed.
     engine_restart_pending: bool,
@@ -2057,6 +2068,7 @@ impl Worker {
             prerelease_waiting: None,
             engine_busy: false,
             search_tasks: Vec::new(),
+            winamp_search_task: None,
             engine_restart_pending: false,
             signed_in: false,
             premium: None,
@@ -2448,6 +2460,9 @@ impl Worker {
                     }
                 }
                 Command::Api(ApiRequest::Search { query, serial }) => self.search(query, serial),
+                Command::Api(ApiRequest::WinampSearch { query, serial }) => {
+                    self.winamp_search(query, serial);
+                }
                 Command::Api(request) => {
                     self.dispatch(request);
                 }
@@ -3521,6 +3536,7 @@ impl Worker {
     fn sign_out(&mut self) {
         self.spotify_restore_started = true;
         self.cancel_search();
+        self.winamp_search(String::new(), 0);
         self.signed_in = false;
         self.rootlist_pending = false;
         self.made_for_you = Arc::new(crate::made_for_you::MadeForYou::new(self.http.clone()));
@@ -5143,6 +5159,16 @@ impl Worker {
         self.search_tasks.push(self.dispatch(request));
     }
 
+    fn winamp_search(&mut self, query: String, serial: u64) {
+        if let Some(task) = self.winamp_search_task.take() {
+            task.abort();
+        }
+        if !query.is_empty() {
+            self.winamp_search_task =
+                Some(self.dispatch(ApiRequest::WinampSearch { query, serial }));
+        }
+    }
+
     /// Cancel requests on sign-out and report completion under their original generation.
     fn dispatch(&self, request: ApiRequest) -> tokio::task::AbortHandle {
         let api = Arc::clone(&self.api);
@@ -5278,7 +5304,9 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         ApiRequest::HiddenSongs { .. } | ApiRequest::SetHiddenInPlaylist { .. } => {
             Operation::UserData
         }
-        ApiRequest::SearchCatalogue { .. } => Operation::CatalogSearch,
+        ApiRequest::SearchCatalogue { .. } | ApiRequest::WinampSearch { .. } => {
+            Operation::CatalogSearch
+        }
         ApiRequest::Search { .. } => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { kind, .. } if kind == "playlist" => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { .. } => Operation::CatalogSearch,
@@ -6008,6 +6036,12 @@ async fn handle(
                 &query,
                 &["track", "artist", "album", "show", "episode"]
             )),
+            query,
+            serial,
+        },
+        ApiRequest::WinampSearch { query, serial } => ApiResponse::WinampSearch {
+            result: routed!(search(&query, &["track"]))
+                .map(|results| results.tracks.unwrap_or_default().items),
             query,
             serial,
         },
@@ -9380,6 +9414,43 @@ mod authorization_tests {
                 tokio::task::yield_now().await;
                 assert!(old.is_finished(), "abandoned search was cancelled");
                 worker.cancel_search();
+            }
+        });
+    }
+
+    #[test]
+    fn mini_search_cancels_its_own_waits_without_cancelling_the_main_search() {
+        let (runtime, mut worker, _) = worker("winamp-search-cancellation");
+        runtime.block_on(async {
+            worker
+                .api
+                .set_state(ApiSource::Shared, SessionState::Authorizing);
+            assert_eq!(
+                operation_for(
+                    &worker.api,
+                    &ApiRequest::WinampSearch {
+                        query: "song".into(),
+                        serial: 1,
+                    }
+                ),
+                Operation::CatalogSearch
+            );
+            worker.search("main".into(), 1);
+            tokio::task::yield_now().await;
+            let main = worker.search_tasks[0].clone();
+            for cancel in 0..3 {
+                worker.winamp_search("old".into(), 1);
+                tokio::task::yield_now().await;
+                let old = worker.winamp_search_task.as_ref().unwrap().clone();
+                assert!(!old.is_finished());
+                match cancel {
+                    0 => worker.winamp_search("new".into(), 2),
+                    1 => worker.winamp_search(String::new(), 2),
+                    _ => worker.sign_out(),
+                }
+                tokio::task::yield_now().await;
+                assert!(old.is_finished());
+                assert_eq!(main.is_finished(), cancel == 2);
             }
         });
     }

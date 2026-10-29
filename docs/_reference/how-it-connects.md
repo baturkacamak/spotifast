@@ -184,6 +184,15 @@ with ten results for each type where the shared app answers with twenty, because
 Development Mode rejects the larger page. With only one grant, one request
 asks for all six types.
 
+The Winamp mini player's Search tab has an independent, songs-only search.
+Typing waits 280 milliseconds before sending a Web API `/search` request with
+`type=track`, using the existing catalogue-search routing and rate limits.
+Enter or Retry submits immediately. Editing, clearing or closing the search
+cancels its previous request, including a wait for authorization or quota.
+Late answers cannot replace a newer query. Switching tabs retains the search;
+sign-out clears it and cancels the request. It does not request playlist search,
+change the main window's search, save query history, or need new permissions.
+
 Since 0.8.0, verified Premium accounts using a shared grant see a
 one-time introduction to their own app. Setup and dismissal are remembered in
 settings. The prompt uses the existing account profile and adds no request.

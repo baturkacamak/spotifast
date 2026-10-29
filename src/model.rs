@@ -1178,6 +1178,11 @@ pub enum Action {
     },
     ShowWinampRadio(bool),
     CloseWinampRadio,
+    OpenWinampSearch,
+    CloseWinampSearch,
+    WinampSearchQuery(String),
+    SubmitWinampSearch,
+    WinampSearchFocused,
     /// Extracts a page's tint while its library row is hovered.
     PrepareTint(String),
     OpenUri(String),

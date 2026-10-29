@@ -92,8 +92,9 @@ a playlist, and animated sound displays. Switch with **Ctrl+M**
 (**Cmd+Shift+M** on macOS), the shrink button, or Settings.
 The playlist keeps already played songs, highlights the current song, and lets
 you save or unsave songs with a heart on each row. Browse a song’s radio in a
-second playlist tab while keeping your original list. The spectrum analyser and
-oscilloscope also work in the collapsed title bar.
+second playlist tab while keeping your original list, or search for songs in a
+Search tab with Ctrl+F (Cmd+F on macOS). The spectrum analyser and oscilloscope
+also work in the collapsed title bar.
 
 <p align="center">
   <img src="docs/assets/images/winamp.png" alt="Spotifast's Winamp mini player with the built-in skin, equalizer, and playlist" width="320">

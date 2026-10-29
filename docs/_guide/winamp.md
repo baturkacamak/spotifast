@@ -104,7 +104,8 @@ it to save or unsave that song without changing playback or the selected rows.
 Without a collection, the list keeps the songs played since it was opened
 along with the remaining queue. The main window still offers the live queue.
 
-- **ADD** opens search or Liked Songs.
+- **ADD → Search Spotify** opens the Search tab inside the mini player.
+  **ADD → Liked Songs** opens Liked Songs in the main window.
 - **SEL** selects rows.
 - **MISC** opens song, artist, and album pages, or the selected song’s radio.
 - **LIST OPTS** starts one of your playlists or saves the queue as a new one.
@@ -132,6 +133,23 @@ playlist from **LIST OPTS** or the main window follows that new playlist.
 Radio uses the existing local playback session and has the same availability
 as the main window's radio page. Loading, an empty result, or an error stays in
 the radio tab. Click the error to retry; the original playlist remains usable.
+
+**Ctrl+F** (**Cmd+F** on macOS) also opens the **Search** tab and focuses its
+field, opening or unrolling the playlist panel if needed. Search by song or
+artist name. After a short pause in typing, matching songs appear with their
+hearts and durations. Enter submits immediately. Double-click a result to play
+that song on its own, as in the main window. The other results are not queued;
+unavailable songs cannot start playback.
+Right-click a result for **Add to queue** or **Play next**. Play next works
+while this computer is the active player, including when paused.
+
+The search field appears only in the Search tab. Switching tabs keeps the
+query, results, scroll position, and selected rows independently from Playlist
+and Radio. Closing Search keeps playback and the original playlist, and
+reopening it restores the last completed search. A failed search offers a
+click to retry; clearing the field clears its results. The main window's
+search is independent. Search queries and results in the mini player stay in
+memory for this run and are cleared on sign-out.
 
 Notices from the main window scroll through the mini player's text display.
 

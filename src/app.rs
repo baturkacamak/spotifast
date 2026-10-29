@@ -3128,6 +3128,10 @@ impl App {
         self.winamp.playlist_source = None;
         self.winamp.playlist_pinned_source = None;
         self.winamp.radio_tab = None;
+        self.winamp.search_tab = crate::winamp::SearchTab {
+            serial: self.winamp.search_tab.serial.wrapping_add(1),
+            ..Default::default()
+        };
         self.winamp.playlist_cursor = None;
         self.winamp.playlist_selection.clear();
         self.winamp.playlist_scroll = 0;
@@ -4061,6 +4065,7 @@ impl App {
             }
         }
 
+        self.tick_winamp_search(ctx);
         if let Some(typed) = self.search.typed_at {
             if typed.elapsed() >= SEARCH_DEBOUNCE {
                 self.search.typed_at = None;
@@ -8295,6 +8300,13 @@ impl App {
                     Err(error) => self.search_failed(&gettext(self.locale, "Playlists"), error),
                 }
             }
+            ApiResponse::WinampSearch {
+                query,
+                serial,
+                result,
+            } => {
+                self.receive_winamp_search(query, serial, result);
+            }
             ApiResponse::Search {
                 query,
                 serial,
@@ -11090,6 +11102,11 @@ impl App {
             self.winamp.playlist_pinned_source = None;
         }
         match action {
+            Action::OpenWinampSearch => self.open_winamp_search(),
+            Action::CloseWinampSearch => self.close_winamp_search(),
+            Action::WinampSearchQuery(query) => self.edit_winamp_search(query),
+            Action::SubmitWinampSearch => self.submit_winamp_search(),
+            Action::WinampSearchFocused => self.winamp.search_tab.focus_requested = false,
             Action::OpenWinampRadio { uri, track } => self.open_winamp_radio(uri, &track),
             Action::ShowWinampRadio(showing) => self.show_winamp_radio(showing),
             Action::CloseWinampRadio => self.close_winamp_radio(),
@@ -11229,7 +11246,9 @@ impl App {
                             .all(|(uri, item)| uri == item.uri())
                     {
                         self.winamp.playlist_cursor = Some(index as usize);
-                        self.winamp.playlist_source = None;
+                        if self.winamp.playlist_pinned_source.is_none() {
+                            self.winamp.playlist_source = None;
+                        }
                     }
                     let (uris, index) = cap_uris(uris.as_ref(), index);
                     let request = PlayRequest::tracks(uris).starting_at_index(index);
@@ -11828,9 +11847,13 @@ impl App {
             Action::SetSearchFilter(filter) => self.search.filter = filter,
             Action::SetTopPeriod(period) => self.set_top_period(period),
             Action::FocusSearch => {
-                self.search.focus_requested = true;
-                if !matches!(self.page(), Page::Search) {
-                    self.open(Page::Search);
+                if self.settings.winamp_window {
+                    self.open_winamp_search();
+                } else {
+                    self.search.focus_requested = true;
+                    if !matches!(self.page(), Page::Search) {
+                        self.open(Page::Search);
+                    }
                 }
             }
             Action::LoadMore(page) => self.load_more(page),
@@ -13942,6 +13965,7 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
 mod radio;
 mod session_controls;
 mod winamp_playlist;
+mod winamp_search;
 
 #[cfg(test)]
 mod tests {
@@ -20494,6 +20518,85 @@ mod tests {
             assert!(!app.search.catalogue_pending && !app.search.playlists_pending);
             app.backend.shutdown();
         }
+    }
+
+    #[test]
+    fn winamp_search_debounces_and_ignores_answers_for_edited_closed_or_signed_out_queries() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("winamp-search-generations");
+        crate::demo::populate(&mut app);
+        app.settings.winamp_window = true;
+        let page = app.page().clone();
+        let playing = app.now_playing().unwrap().uri;
+        app.search.query = "main window".into();
+        app.apply(Action::FocusSearch, &ctx);
+        assert!(app.winamp.search_tab.showing && app.winamp.search_tab.focus_requested);
+        assert_eq!(app.page(), &page);
+        app.apply(Action::WinampSearchQuery("  first  ".into()), &ctx);
+        app.tick_winamp_search(&ctx);
+        assert!(app.winamp.search_tab.committed.is_empty());
+        app.winamp.search_tab.typed_at = Some(Instant::now() - SEARCH_DEBOUNCE);
+        app.tick_winamp_search(&ctx);
+        assert_eq!(app.winamp.search_tab.committed, "first");
+        let first = app.winamp.search_tab.serial;
+        app.apply(Action::SubmitWinampSearch, &ctx);
+        assert_eq!(
+            app.winamp.search_tab.serial, first,
+            "Enter does not restart an in-flight query"
+        );
+        app.apply(Action::WinampSearchQuery("second".into()), &ctx);
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "first".into(),
+            serial: first,
+            result: Ok(vec![Track::default()]),
+        });
+        assert!(app.winamp.search_tab.songs.is_loading());
+        app.apply(Action::SubmitWinampSearch, &ctx);
+        let second = app.winamp.search_tab.serial;
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "second".into(),
+            serial: second,
+            result: Err(crate::api::ApiError::RateLimited),
+        });
+        assert!(matches!(app.winamp.search_tab.songs, Loadable::Failed(_)));
+        app.apply(Action::SubmitWinampSearch, &ctx);
+        assert!(app.winamp.search_tab.serial > second);
+        let tracks = catalogue_answer().tracks.unwrap().items;
+        let retry = app.winamp.search_tab.serial;
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "second".into(),
+            serial: retry,
+            result: Ok(tracks),
+        });
+        assert_eq!(app.winamp.search_tab.songs.get().unwrap().len(), 1);
+        assert_eq!(app.search.query, "main window");
+        assert_eq!(app.now_playing().unwrap().uri, playing);
+        app.apply(Action::WinampSearchQuery(String::new()), &ctx);
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "second".into(),
+            serial: retry,
+            result: Ok(vec![Track::default()]),
+        });
+        assert!(matches!(app.winamp.search_tab.songs, Loadable::NotLoaded));
+        app.apply(Action::WinampSearchQuery("third".into()), &ctx);
+        app.apply(Action::SubmitWinampSearch, &ctx);
+        let third = app.winamp.search_tab.serial;
+        app.apply(Action::CloseWinampSearch, &ctx);
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "third".into(),
+            serial: third,
+            result: Ok(vec![Track::default()]),
+        });
+        assert!(matches!(app.winamp.search_tab.songs, Loadable::NotLoaded));
+        app.reset_data();
+        app.handle_api(ApiResponse::WinampSearch {
+            query: "third".into(),
+            serial: third,
+            result: Ok(vec![Track::default()]),
+        });
+        assert!(app.winamp.search_tab.query.is_empty());
+        assert!(!app.winamp.search_tab.open);
+        app.backend.shutdown();
     }
 
     fn answer_search(app: &mut App, query: &str, serial: u64) {

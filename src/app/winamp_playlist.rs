@@ -31,6 +31,7 @@ impl App {
     }
 
     pub(super) fn show_winamp_radio(&mut self, showing: bool) {
+        self.hide_winamp_search();
         if showing
             && self.winamp.radio_tab.is_some()
             && self.winamp.playlist_pinned_source.is_none()
@@ -48,7 +49,14 @@ impl App {
     }
 
     pub(super) fn close_winamp_radio(&mut self) {
-        self.show_winamp_radio(false);
+        if self
+            .winamp
+            .radio_tab
+            .as_ref()
+            .is_some_and(|tab| tab.showing)
+        {
+            self.show_winamp_radio(false);
+        }
         self.winamp.radio_tab = None;
         // Keep the original list pinned even if the radio is still playing.
     }
@@ -156,13 +164,7 @@ impl App {
                     self.load_window(page, 0);
                 } else if loaded
                     && more
-                    && self
-                        .winamp
-                        .radio_tab
-                        .as_ref()
-                        .filter(|tab| tab.showing)
-                        .map_or(self.winamp.playlist_scroll, |tab| tab.scroll)
-                        + 32
+                    && self.winamp.original_playlist_scroll() + 32
                         >= self.winamp_collection().map_or(0, |(_, rows)| rows.len())
                 {
                     self.load_more(page);
@@ -212,6 +214,18 @@ impl App {
         }
         let visible = (self.settings.playlist_height / crate::skin::layout::PLAYLIST_TRACK_HEIGHT
             + 1) as usize;
+        let search_uris = self.winamp.search_tab.showing.then(|| {
+            self.winamp
+                .search_tab
+                .songs
+                .get()
+                .into_iter()
+                .flatten()
+                .skip(self.winamp.playlist_scroll)
+                .take(visible)
+                .map(|track| track.uri.clone())
+                .collect()
+        });
         let radio_uris = self
             .winamp
             .radio_tab
@@ -227,7 +241,7 @@ impl App {
                     .map(|track| track.uri.clone())
                     .collect()
             });
-        let uris = radio_uris.unwrap_or_else(|| {
+        let uris = search_uris.or(radio_uris).unwrap_or_else(|| {
             collection.map_or_else(
                 || {
                     self.winamp

@@ -80,6 +80,7 @@ pub(super) fn show(app: &mut App, view: &mut View, now: Option<&NowPlaying>, foc
 
     let (rows, queue_uris) = rows(app, now);
     tabs(app, view);
+    search_input(app, view);
     list(app, view, &rows, height);
     scrollbar(app, view, rows.len(), height);
     grip(app, view, height);
@@ -258,26 +259,71 @@ fn frame(view: &mut View, height: u32, focused: bool) {
     view.sprite_at(PLAYLIST_BOTTOM_RIGHT, 125, bottom);
 }
 
-/// The two views share the skin's list area and keep independent positions.
+/// Tabs share the skin's list area, with one close button per temporary view.
+struct Tab {
+    label: String,
+    tooltip: String,
+    width: u32,
+    selected: bool,
+    action: Action,
+    close: Option<Action>,
+}
+
 fn tabs(app: &mut App, view: &mut View) {
-    let Some(tab) = &app.winamp.radio_tab else {
+    let search = &app.winamp.search_tab;
+    if app.winamp.radio_tab.is_none() && !search.open {
         return;
-    };
-    let showing = tab.showing;
-    let title = app
-        .radio_name(&tab.seed)
-        .unwrap_or_else(|| gettext(app.locale, "Radio").into_owned());
+    }
+    let radio_showing = app.winamp.radio_tab.as_ref().is_some_and(|tab| tab.showing);
+    let mut tabs = vec![Tab {
+        label: gettext(app.locale, "Playlist").into_owned(),
+        tooltip: gettext(app.locale, "Playlist").into_owned(),
+        width: 70,
+        selected: !radio_showing && !search.showing,
+        action: Action::ShowWinampRadio(false),
+        close: None,
+    }];
+    if let Some(radio) = &app.winamp.radio_tab {
+        let title = app
+            .radio_name(&radio.seed)
+            .unwrap_or_else(|| gettext(app.locale, "Radio").into_owned());
+        tabs.push(Tab {
+            label: if search.open {
+                gettext(app.locale, "Radio").into_owned()
+            } else {
+                title.clone()
+            },
+            tooltip: title,
+            width: if search.open { 82 } else { 173 },
+            selected: radio_showing,
+            action: Action::ShowWinampRadio(true),
+            close: Some(Action::CloseWinampRadio),
+        });
+    }
+    if search.open {
+        tabs.push(Tab {
+            label: gettext(app.locale, "Search").into_owned(),
+            tooltip: gettext(app.locale, "Search Spotify").into_owned(),
+            width: if app.winamp.radio_tab.is_some() {
+                91
+            } else {
+                173
+            },
+            selected: search.showing,
+            action: Action::OpenWinampSearch,
+            close: Some(Action::CloseWinampSearch),
+        });
+    }
     let style = view.skin.playlist.clone();
-    let labels = [gettext(app.locale, "Playlist").into_owned(), title];
-    for (index, (x, width)) in [(12, 70), (82, 161)].into_iter().enumerate() {
+    let mut x = layout::PLAYLIST_LEFT_WIDTH;
+    for (index, tab) in tabs.into_iter().enumerate() {
         let area = Area::new(
             x,
             layout::PLAYLIST_TITLE_HEIGHT,
-            width,
+            tab.width,
             layout::PLAYLIST_TRACK_HEIGHT,
         );
-        let active = showing == (index == 1);
-        let rgb = if active {
+        let rgb = if tab.selected {
             style.selected_background
         } else {
             style.normal_background
@@ -289,42 +335,130 @@ fn tabs(app: &mut App, view: &mut View) {
             area.height,
             Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
         );
+        let close_width = if tab.close.is_some() { 12 } else { 0 };
+        let label_area = Area::new(x, area.y, area.width - close_width, area.height);
         super::pixel_line(
             app,
             view,
-            &labels[index],
-            Area::new(x + 3, area.y + 4, width - 6, 6),
+            &tab.label,
+            Area::new(x + 3, area.y + 4, label_area.width - 6, 6),
         );
         if view
-            .interact(area, &format!("playlist-tab-{index}"), Sense::click())
-            .on_hover_text(&labels[index])
+            .interact(label_area, &format!("playlist-tab-{index}"), Sense::click())
+            .on_hover_text(&tab.tooltip)
             .clicked()
         {
-            app.actions.push(Action::ShowWinampRadio(index == 1));
+            app.actions.push(tab.action);
         }
+        if let Some(action) = tab.close {
+            let close = Area::new(x + area.width - 12, area.y, 12, area.height);
+            view.text("X", Area::new(close.x + 3, close.y + 4, 5, 6));
+            if view
+                .interact(
+                    close,
+                    &format!("playlist-tab-close-{index}"),
+                    Sense::click(),
+                )
+                .on_hover_text(gettext(app.locale, "Close").as_ref())
+                .clicked()
+            {
+                app.actions.push(action);
+            }
+        }
+        x += area.width;
     }
-    let close = Area::new(
+}
+
+fn search_input(app: &mut App, view: &mut View) {
+    if !app.winamp.search_tab.showing {
+        return;
+    }
+    let area = Area::new(
+        layout::PLAYLIST_LEFT_WIDTH,
+        layout::PLAYLIST_TITLE_HEIGHT + layout::PLAYLIST_TRACK_HEIGHT,
         243,
-        layout::PLAYLIST_TITLE_HEIGHT,
-        12,
         layout::PLAYLIST_TRACK_HEIGHT,
     );
-    let rgb = style.normal_background;
+    let rgb = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
+    let style = view.skin.playlist.clone();
     view.fill(
-        close.x,
-        close.y,
-        close.width,
-        close.height,
-        Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+        area.x,
+        area.y,
+        area.width,
+        area.height,
+        rgb(style.normal_background),
     );
-    view.text("X", Area::new(close.x + 3, close.y + 4, 5, 6));
-    if view
-        .interact(close, "playlist-radio-close", Sense::click())
-        .on_hover_text(gettext(app.locale, "Close").as_ref())
-        .clicked()
-    {
-        app.actions.push(Action::CloseWinampRadio);
+    view.fill(
+        area.x,
+        area.y + area.height - 1,
+        area.width,
+        1,
+        rgb(style.selected_background),
+    );
+    let mut query = app.winamp.search_tab.query.clone();
+    let rect = view.rect(area);
+    let response = view
+        .ui
+        .scope(|ui| {
+            ui.spacing_mut().interact_size.y = rect.height();
+            ui.visuals_mut().selection.bg_fill = rgb(style.selected_background);
+            ui.visuals_mut().text_cursor.stroke.color = rgb(style.current);
+            ui.put(
+                rect,
+                egui::TextEdit::singleline(&mut query)
+                    .id(egui::Id::new("winamp-search-query"))
+                    .font(egui::FontId::monospace(8.0 * view.unit))
+                    .text_color(rgb(style.normal))
+                    .background_color(rgb(style.normal_background))
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::vec2(3.0 * view.unit, 1.0 * view.unit))
+                    .hint_text(gettext(app.locale, "Search Spotify").as_ref()),
+            )
+        })
+        .inner;
+    if app.winamp.search_tab.focus_requested {
+        response.request_focus();
+        app.actions.push(Action::WinampSearchFocused);
     }
+    if response.changed() {
+        app.actions.push(Action::WinampSearchQuery(query));
+    }
+    if response.lost_focus() && view.ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        app.actions.push(Action::SubmitWinampSearch);
+    }
+}
+
+fn row_menu(app: &mut App, ui: &mut egui::Ui, row: &Row) {
+    if app.winamp.search_tab.showing
+        && let Some(track) = &row.track
+    {
+        if ui
+            .add_enabled(
+                app.can_queue(&row.uri),
+                egui::Button::new(gettext(app.locale, "Add to queue").as_ref()),
+            )
+            .clicked()
+        {
+            app.actions.push(Action::AddToQueue {
+                uri: row.uri.clone(),
+                label: track.name.clone(),
+            });
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                app.can_queue(&row.uri) && app.queue_locally_reorderable(),
+                egui::Button::new(gettext(app.locale, "Play next").as_ref()),
+            )
+            .clicked()
+        {
+            app.actions.push(Action::PlayNext {
+                items: vec![PlayableItem::Track(track.clone())],
+            });
+            ui.close();
+        }
+    }
+    song_radio_menu(app, ui, row);
 }
 
 fn song_radio_menu(app: &mut App, ui: &mut egui::Ui, row: &Row) {
@@ -344,22 +478,36 @@ fn song_radio_menu(app: &mut App, ui: &mut egui::Ui, row: &Row) {
     }
 }
 
-fn radio_status(app: &mut App, view: &mut View, area: Area) {
-    let Some(tab) = app.winamp.radio_tab.as_ref().filter(|tab| tab.showing) else {
-        return;
-    };
-    let seed = tab.seed.clone();
-    let state = app.radio_pages.get(&seed).map(|page| &page.songs);
-    let error = match state {
-        Some(crate::model::Loadable::Failed(error)) => Some(error.clone()),
-        _ => None,
-    };
-    let message = if let Some(error) = &error {
-        format!("{}: {error}", gettext(app.locale, "Retry"))
-    } else if matches!(state, Some(crate::model::Loadable::Loaded(_))) {
-        gettext(app.locale, "Nothing here yet.").into_owned()
+fn empty_status(app: &mut App, view: &mut View, area: Area) {
+    let search = &app.winamp.search_tab;
+    let (message, retry) = if search.showing {
+        match &search.songs {
+            crate::model::Loadable::Failed(error) => (
+                format!("{}: {error}", gettext(app.locale, "Retry")),
+                Some(Action::SubmitWinampSearch),
+            ),
+            crate::model::Loadable::Loaded(_) => {
+                (gettext(app.locale, "Nothing here yet.").into_owned(), None)
+            }
+            _ if search.query.trim().is_empty() => {
+                (gettext(app.locale, "Search Spotify").into_owned(), None)
+            }
+            _ => (gettext(app.locale, "Loading…").into_owned(), None),
+        }
+    } else if let Some(tab) = app.winamp.radio_tab.as_ref().filter(|tab| tab.showing) {
+        let state = app.radio_pages.get(&tab.seed).map(|page| &page.songs);
+        match state {
+            Some(crate::model::Loadable::Failed(error)) => (
+                format!("{}: {error}", gettext(app.locale, "Retry")),
+                Some(Action::Reload(Page::Radio(tab.seed.clone()))),
+            ),
+            Some(crate::model::Loadable::Loaded(_)) => {
+                (gettext(app.locale, "Nothing here yet.").into_owned(), None)
+            }
+            _ => (gettext(app.locale, "Loading…").into_owned(), None),
+        }
     } else {
-        gettext(app.locale, "Loading…").into_owned()
+        return;
     };
     super::pixel_line(
         app,
@@ -367,23 +515,24 @@ fn radio_status(app: &mut App, view: &mut View, area: Area) {
         &message,
         Area::new(area.x + 3, area.y + 4, area.width - 6, 6),
     );
-    if error.is_some()
+    if let Some(action) = retry
         && view
-            .interact(area, "playlist-radio-retry", Sense::click())
+            .interact(area, "playlist-retry", Sense::click())
             .on_hover_text(&message)
             .clicked()
     {
-        app.actions.push(Action::Reload(Page::Radio(seed)));
+        app.actions.push(action);
     }
 }
 
+fn header_rows(app: &App) -> u32 {
+    u32::from(app.winamp.radio_tab.is_some() || app.winamp.search_tab.open)
+        + u32::from(app.winamp.search_tab.showing)
+}
+
 /// The list's own area, between the tiles.
-fn list_area(height: u32, tabs: bool) -> Area {
-    let tab_height = if tabs {
-        layout::PLAYLIST_TRACK_HEIGHT
-    } else {
-        0
-    };
+fn list_area(height: u32, header_rows: u32) -> Area {
+    let tab_height = header_rows * layout::PLAYLIST_TRACK_HEIGHT;
     Area::new(
         layout::PLAYLIST_LEFT_WIDTH,
         layout::PLAYLIST_TITLE_HEIGHT + tab_height,
@@ -392,14 +541,49 @@ fn list_area(height: u32, tabs: bool) -> Area {
     )
 }
 
-fn rows_visible(height: u32, tabs: bool) -> usize {
-    (list_area(height, tabs).height / layout::PLAYLIST_TRACK_HEIGHT) as usize
+fn rows_visible(height: u32, header_rows: u32) -> usize {
+    (list_area(height, header_rows).height / layout::PLAYLIST_TRACK_HEIGHT) as usize
 }
 
 /// The full collection, or retained loose list. The live queue remains
 /// separate for queue-specific actions and saving it as a playlist.
 fn rows(app: &App, now: Option<&NowPlaying>) -> (Vec<Row>, Vec<String>) {
     let queue = app.queue.get();
+    if app.winamp.search_tab.showing {
+        let songs = app
+            .winamp
+            .search_tab
+            .songs
+            .get()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let rows = songs
+            .iter()
+            .enumerate()
+            .map(|(index, track)| {
+                // Search plays one song, as in the main window. The other
+                // results are browsing choices, not a playback queue.
+                let context = RowContext::Uris(std::sync::Arc::from([track.uri.clone()]));
+                let mut row = collection_row(
+                    app,
+                    &context,
+                    index as u32,
+                    &PlayableItem::Track(track.clone()),
+                    now,
+                );
+                if row.play.is_some() {
+                    row.play = Some((context, 0));
+                }
+                row
+            })
+            .collect();
+        return (
+            rows,
+            queue
+                .map(|q| q.queue.iter().map(|item| item.uri().to_owned()).collect())
+                .unwrap_or_default(),
+        );
+    }
     if let Some(tab) = app.winamp.radio_tab.as_ref().filter(|tab| tab.showing) {
         let rows = app
             .radio_pages
@@ -596,7 +780,7 @@ fn label(number: usize, subtitle: &str, title: &str) -> String {
 fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
     let style = view.skin.playlist.clone();
     let rgb = |color: [u8; 3]| Color32::from_rgb(color[0], color[1], color[2]);
-    let area = list_area(height, app.winamp.radio_tab.is_some());
+    let area = list_area(height, header_rows(app));
     view.fill(
         area.x,
         area.y,
@@ -605,7 +789,7 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
         rgb(style.normal_background),
     );
 
-    let visible = rows_visible(height, app.winamp.radio_tab.is_some());
+    let visible = rows_visible(height, header_rows(app));
     let most = rows.len().saturating_sub(visible);
     // The wheel, over the list.
     // `contains_pointer`, not `hovered`: the rows drawn on top of the list
@@ -649,7 +833,7 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
     app.winamp.playlist_scroll = app.winamp.playlist_scroll.min(most);
     let scroll = app.winamp.playlist_scroll;
     if rows.is_empty() {
-        radio_status(app, view, area);
+        empty_status(app, view, area);
     }
     let autoscroll_rect = view.rect(area);
     crate::autoscroll::playlist(
@@ -695,7 +879,7 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             egui::Popup::context_menu(&response),
             view.skin,
             view.unit,
-            |ui| song_radio_menu(app, ui, row),
+            |ui| row_menu(app, ui, row),
         );
         let on_heart = heart_width > 0
             && response
@@ -800,9 +984,9 @@ fn fit(text: &mut super::PixelText, label: &str, width: f32) -> String {
 
 /// The handle in the right-hand tiles, dragged to scroll.
 fn scrollbar(app: &mut App, view: &mut View, rows: usize, height: u32) {
-    let visible = rows_visible(height, app.winamp.radio_tab.is_some());
+    let visible = rows_visible(height, header_rows(app));
     let most = rows.saturating_sub(visible);
-    let top = list_area(height, app.winamp.radio_tab.is_some()).y;
+    let top = list_area(height, header_rows(app)).y;
     let travel = height
         .saturating_sub(top + layout::PLAYLIST_BOTTOM_HEIGHT)
         .saturating_sub(layout::PLAYLIST_SCROLL_HANDLE_HEIGHT);
@@ -929,8 +1113,7 @@ fn add_menu(app: &mut App, ui: &mut egui::Ui) {
         .button(gettext(locale, "Search Spotify").as_ref())
         .clicked()
     {
-        app.actions.push(Action::FocusSearch);
-        app.actions.push(Action::ToggleWinampWindow);
+        app.actions.push(Action::OpenWinampSearch);
     }
     if ui.button(gettext(locale, "Liked Songs").as_ref()).clicked() {
         app.actions.push(Action::Open(Page::LikedSongs));
@@ -1168,11 +1351,13 @@ mod tests {
 
     #[test]
     fn the_list_holds_whole_rows_only() {
-        assert_eq!(rows_visible(116, false), 4);
-        assert_eq!(rows_visible(174, false), 8);
-        assert_eq!(list_area(174, false), Area::new(12, 20, 243, 116));
-        assert_eq!(list_area(174, true), Area::new(12, 33, 243, 103));
-        assert_eq!(rows_visible(116, true), 3);
+        assert_eq!(rows_visible(116, 0), 4);
+        assert_eq!(rows_visible(174, 0), 8);
+        assert_eq!(list_area(174, 0), Area::new(12, 20, 243, 116));
+        assert_eq!(list_area(174, 1), Area::new(12, 33, 243, 103));
+        assert_eq!(rows_visible(116, 1), 3);
+        assert_eq!(list_area(174, 2), Area::new(12, 46, 243, 90));
+        assert_eq!(rows_visible(116, 2), 2);
     }
 
     fn demo_app(name: &str) -> App {
@@ -1229,6 +1414,256 @@ mod tests {
             &egui::Context::default(),
         );
         seed
+    }
+
+    fn fill_search(app: &mut App) {
+        let songs: Vec<_> = app
+            .winamp_collection()
+            .unwrap()
+            .1
+            .into_iter()
+            .take(5)
+            .filter_map(|(_, item)| match item {
+                PlayableItem::Track(track) => Some(track),
+                _ => None,
+            })
+            .collect();
+        app.winamp.search_tab.query = "Bonobo".into();
+        app.winamp.search_tab.committed = "Bonobo".into();
+        app.winamp.search_tab.typed_at = None;
+        app.winamp.search_tab.focus_requested = false;
+        app.winamp.search_tab.songs = crate::model::Loadable::Loaded(songs);
+    }
+
+    #[test]
+    fn search_preserves_all_three_views_and_closing_a_tab_leaves_playback_alone() {
+        let mut app = demo_app("search-tab-state");
+        app.prepare_winamp_playlist();
+        app.winamp.playlist_scroll = 2;
+        app.winamp.playlist_selection.insert(3);
+        open_demo_radio(&mut app);
+        app.winamp.playlist_scroll = 1;
+        app.winamp.playlist_selection.insert(1);
+        let original = app.winamp_collection().unwrap();
+        let playing = app.now_playing().unwrap().uri;
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenWinampSearch, &ctx);
+        fill_search(&mut app);
+        assert_eq!(app.winamp.playlist_scroll, 0);
+        assert!(app.winamp.playlist_selection.is_empty());
+        app.winamp.playlist_scroll = 1;
+        app.winamp.playlist_selection.insert(2);
+        app.apply(Action::ShowWinampRadio(true), &ctx);
+        assert_eq!(app.winamp.playlist_scroll, 1);
+        assert_eq!(
+            app.winamp.playlist_selection,
+            std::collections::HashSet::from([1])
+        );
+        app.apply(Action::OpenWinampSearch, &ctx);
+        assert_eq!(app.winamp.playlist_scroll, 1);
+        assert_eq!(
+            app.winamp.playlist_selection,
+            std::collections::HashSet::from([2])
+        );
+        assert_eq!(rows(&app, app.now_playing().as_ref()).0.len(), 5);
+        app.apply(Action::CloseWinampSearch, &ctx);
+        assert!(app.winamp.radio_tab.as_ref().unwrap().showing);
+        assert_eq!(app.winamp.search_tab.query, "Bonobo");
+        assert_eq!(app.winamp.search_tab.songs.get().unwrap().len(), 5);
+        app.apply(Action::OpenWinampSearch, &ctx);
+        app.apply(Action::CloseWinampRadio, &ctx);
+        assert!(app.winamp.search_tab.showing);
+        assert_eq!(
+            app.winamp.playlist_selection,
+            std::collections::HashSet::from([2])
+        );
+        app.apply(Action::CloseWinampSearch, &ctx);
+        assert_eq!(app.winamp.playlist_scroll, 2);
+        assert_eq!(
+            app.winamp.playlist_selection,
+            std::collections::HashSet::from([3])
+        );
+        assert_eq!(app.winamp_collection().unwrap(), original);
+        assert_eq!(app.now_playing().unwrap().uri, playing);
+        app.backend.shutdown();
+    }
+
+    fn search_frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let skin = app.winamp.skin.clone();
+        let textures = app.winamp.textures(ctx);
+        let now = app.now_playing();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(550.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                crate::ui::keys::handle(app, ctx);
+                let mut view = View {
+                    ui,
+                    origin: egui::Pos2::ZERO,
+                    unit: 2.0,
+                    skin: &skin,
+                    textures: &textures,
+                    mask: None,
+                };
+                show(app, &mut view, now.as_ref(), true);
+            },
+        );
+        output.textures_delta.clear();
+        output.platform_output.accesskit_update.unwrap()
+    }
+
+    fn apply_pending(app: &mut App, ctx: &egui::Context) {
+        for action in std::mem::take(&mut app.actions) {
+            app.apply(action, ctx);
+        }
+    }
+
+    fn pointer(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn ctrl_f_focuses_the_search_field_and_a_result_double_click_plays_without_replacing_the_playlist()
+     {
+        let mut app = demo_app("search-keyboard");
+        app.settings.winamp_window = true;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let page = app.page().clone();
+        search_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        apply_pending(&mut app, &ctx);
+        assert!(app.winamp.search_tab.showing && app.settings.playlist_open);
+        search_frame(&ctx, &mut app, vec![]);
+        apply_pending(&mut app, &ctx);
+        assert!(ctx.memory(|memory| memory.has_focus(egui::Id::new("winamp-search-query"))));
+        search_frame(&ctx, &mut app, vec![egui::Event::Text("Bonobo".into())]);
+        apply_pending(&mut app, &ctx);
+        assert_eq!(app.winamp.search_tab.query, "Bonobo");
+        assert!(app.winamp.search_tab.typed_at.is_some());
+        assert_eq!(app.page(), &page);
+        fill_search(&mut app);
+        let original = app.winamp_collection().unwrap();
+        let (items, _) = rows(&app, app.now_playing().as_ref());
+        let pos = egui::pos2(100.0, 130.0);
+        search_frame(&ctx, &mut app, vec![]);
+        for _ in 0..2 {
+            search_frame(
+                &ctx,
+                &mut app,
+                pointer(pos, egui::PointerButton::Primary, true),
+            );
+            search_frame(
+                &ctx,
+                &mut app,
+                pointer(pos, egui::PointerButton::Primary, false),
+            );
+        }
+        assert!(
+            matches!(app.actions.as_slice(), [Action::PlayFromRow { context: RowContext::Uris(uris), uri, index: 0 }] if uris.as_ref() == [items[1].uri.clone()] && uri == &items[1].uri),
+            "{:?}",
+            app.actions
+        );
+        apply_pending(&mut app, &ctx);
+        app.prepare_winamp_playlist();
+        assert_eq!(app.now_playing().unwrap().uri, items[1].uri);
+        assert_eq!(app.winamp_collection().unwrap(), original);
+        app.apply(Action::CloseWinampSearch, &ctx);
+        assert_eq!(app.now_playing().unwrap().uri, items[1].uri);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn search_results_offer_queue_and_play_next_through_their_context_menu() {
+        for next in [false, true] {
+            let mut app = demo_app(if next {
+                "search-play-next"
+            } else {
+                "search-queue"
+            });
+            app.settings.winamp_window = true;
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            app.apply(Action::OpenWinampSearch, &ctx);
+            fill_search(&mut app);
+            app.local_ready = true;
+            app.local.track = Some(crate::player::LocalTrack {
+                uri: app.now_playing().unwrap().uri,
+                ..Default::default()
+            });
+            app.local.playback = crate::player::Playback::Paused;
+            assert!(app.queue_locally_reorderable());
+            search_frame(&ctx, &mut app, vec![]);
+            let pos = egui::pos2(100.0, 104.0);
+            search_frame(
+                &ctx,
+                &mut app,
+                pointer(pos, egui::PointerButton::Secondary, true),
+            );
+            search_frame(
+                &ctx,
+                &mut app,
+                pointer(pos, egui::PointerButton::Secondary, false),
+            );
+            let tree = search_frame(&ctx, &mut app, vec![]);
+            let label = if next { "Play next" } else { "Add to queue" };
+            let button = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .expect("queue command is in the context menu")
+                .0;
+            search_frame(
+                &ctx,
+                &mut app,
+                vec![egui::Event::AccessKitActionRequest(
+                    egui::accesskit::ActionRequest {
+                        target_tree: egui::accesskit::TreeId::ROOT,
+                        target_node: button,
+                        action: egui::accesskit::Action::Click,
+                        data: None,
+                    },
+                )],
+            );
+            if next {
+                assert!(
+                    matches!(app.actions.as_slice(), [Action::PlayNext { items }] if items.len() == 1)
+                );
+            } else {
+                assert!(matches!(
+                    app.actions.as_slice(),
+                    [Action::AddToQueue { .. }]
+                ));
+            }
+            app.backend.shutdown();
+        }
     }
 
     #[test]
@@ -1357,6 +1792,7 @@ mod tests {
     #[test]
     fn radio_browsing_playback_and_closing_preserve_the_original_playlist() {
         let mut app = demo_app("radio-tabs");
+        app.remote.as_mut().unwrap().state.is_playing = false;
         app.prepare_winamp_playlist();
         let original = app.winamp_collection().unwrap();
         let playing = app.now_playing().unwrap();
