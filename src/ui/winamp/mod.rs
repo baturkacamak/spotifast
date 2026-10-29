@@ -484,14 +484,25 @@ fn like_button(app: &mut App, view: &mut View, now: Option<&NowPlaying>, area: A
     let Some(now) = likeable_track(now) else {
         return;
     };
-    let saved = app.is_saved(&now.uri).unwrap_or(false);
+    track_like_button(app, view, &now.uri, area, framed);
+}
+
+fn track_like_button(app: &mut App, view: &mut View, uri: &str, area: Area, framed: bool) {
+    if !uri.starts_with("spotify:track:") {
+        return;
+    }
+    let saved = app.is_saved(uri).unwrap_or(false);
     let tooltip = if saved {
         gettext(app.locale, "Remove from Liked Songs")
     } else {
         gettext(app.locale, "Save to Liked Songs")
     };
     let response = view
-        .interact(area, "winamp-like", Sense::click())
+        .interact(
+            area,
+            &format!("winamp-like-{uri}-{}", area.y),
+            Sense::click(),
+        )
         .on_hover_text(tooltip.as_ref());
     if framed {
         let rgb = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
@@ -535,7 +546,7 @@ fn like_button(app: &mut App, view: &mut View, now: Option<&NowPlaying>, area: A
         }
     }
     if response.clicked() {
-        app.actions.push(Action::ToggleSaved(now.uri.clone()));
+        app.actions.push(Action::ToggleSaved(uri.to_owned()));
     }
 }
 

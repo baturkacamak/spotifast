@@ -92,9 +92,17 @@ on here and the account has to be Premium.
 
 ## Playlist
 
-**PL** opens the playlist below the player. It shows the playing song followed
-by the queue. Double-click a song to play it, Ctrl-click to select several, and
+**PL** opens the playlist below the player. It keeps the playing playlist,
+album, or Liked Songs in its original order, including songs already played.
+The playing song is highlighted without removing earlier rows or changing
+your scroll position. More rows load as you scroll. Double-click any song,
+including an earlier one, to play from there. Ctrl-click selects several rows;
 drag the lower-right corner to resize the window. Use X or **PL** to close it.
+
+The heart beside each Spotify song shows whether it is in Liked Songs. Click
+it to save or unsave that song without changing playback or the selected rows.
+Without a collection, the list keeps the songs played since it was opened
+along with the remaining queue. The main window still offers the live queue.
 
 - **ADD** opens search or Liked Songs.
 - **SEL** selects rows.
@@ -108,7 +116,8 @@ drag the lower-right corner to resize the window. Use X or **PL** to close it.
   a Retry button; "No options for this playlist" means Spotify answered with
   no options for that playlist.
 - **REM → Remove selected** takes the selected songs you queued out of the
-  queue, and **REM → Remove all** clears every song you queued. Both work when
+  queue when it is showing a loose queue, and **REM → Remove all** clears every
+  song you queued. Both work when
   this computer is playing. Songs from the playing album or playlist stay.
 
 Notices from the main window scroll through the mini player's text display.

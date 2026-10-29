@@ -3124,6 +3124,11 @@ impl App {
         self.confirmed_ep_albums.clear();
         self.saved.clear();
         self.saved_pending.clear();
+        self.winamp.playlist_history.clear();
+        self.winamp.playlist_source = None;
+        self.winamp.playlist_cursor = None;
+        self.winamp.playlist_selection.clear();
+        self.winamp.playlist_scroll = 0;
         self.track_recordings.clear();
         self.recording_uris.clear();
         self.playlist_availability.clear();
@@ -3934,6 +3939,9 @@ impl App {
             .is_some_and(|played| self.current_track_uri().as_ref() != Some(&played.uri))
         {
             self.played_row = None;
+        }
+        if self.settings.winamp_window && self.settings.playlist_open {
+            self.prepare_winamp_playlist();
         }
         self.maybe_suggest_personal_app();
         let rate_limits = self.backend.activity().shared_rate_limits();
@@ -11184,6 +11192,18 @@ impl App {
                             .position(|held| *held == uri)
                             .map_or(index, |position| position as u32)
                     };
+                    // The mini player's loose list retains played rows. Keep
+                    // the exact clicked occurrence when going back through it.
+                    if self.settings.winamp_window
+                        && uris.len() == self.winamp.playlist_history.len()
+                        && uris
+                            .iter()
+                            .zip(&self.winamp.playlist_history)
+                            .all(|(uri, item)| uri == item.uri())
+                    {
+                        self.winamp.playlist_cursor = Some(index as usize);
+                        self.winamp.playlist_source = None;
+                    }
                     let (uris, index) = cap_uris(uris.as_ref(), index);
                     let request = PlayRequest::tracks(uris).starting_at_index(index);
                     self.play_request(request, false);
@@ -13894,6 +13914,7 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
 
 mod radio;
 mod session_controls;
+mod winamp_playlist;
 
 #[cfg(test)]
 mod tests {

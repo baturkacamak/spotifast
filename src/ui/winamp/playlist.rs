@@ -1,7 +1,7 @@
 //! The playlist window, joined to the bottom of the main one.
 //!
 //! Uses `pledit.bmp` for the frame and `pledit.txt` for list colors. It shows
-//! the current track and queue; double-clicking plays a row. Unsupported file
+//! the complete playing collection; double-clicking plays a row. Unsupported file
 //! controls remain decorative. The panel shares the mini-player window so the
 //! two parts stay attached.
 
@@ -25,6 +25,7 @@ struct Row {
     current: bool,
     /// Where the song sits in the queue, when it is queued rather than on.
     queued: Option<usize>,
+    play: Option<(RowContext, u32)>,
     /// The pages the MISC menu can open for it.
     album_id: Option<String>,
     artist_id: Option<String>,
@@ -269,10 +270,53 @@ fn rows_visible(height: u32) -> usize {
     (list_area(height).height / layout::PLAYLIST_TRACK_HEIGHT) as usize
 }
 
-/// What is playing, then the queue, numbered the way Winamp numbered a
-/// playlist. The queue's URIs come along for playing from a row.
+/// The full collection, or retained loose list. The live queue remains
+/// separate for queue-specific actions and saving it as a playlist.
 fn rows(app: &App, now: Option<&NowPlaying>) -> (Vec<Row>, Vec<String>) {
     let queue = app.queue.get();
+    if let Some((context, items)) = app.winamp_collection() {
+        let rows = items
+            .into_iter()
+            .map(|(index, item)| collection_row(app, &context, index, &item, now))
+            .collect();
+        return (
+            rows,
+            queue
+                .map(|q| q.queue.iter().map(|item| item.uri().to_owned()).collect())
+                .unwrap_or_default(),
+        );
+    }
+    if !app.winamp.playlist_history.is_empty() {
+        let uris: std::sync::Arc<[String]> = app
+            .winamp
+            .playlist_history
+            .iter()
+            .map(|item| item.uri().to_owned())
+            .collect();
+        let context = RowContext::Uris(uris);
+        let rows = app
+            .winamp
+            .playlist_history
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let mut row = collection_row(app, &context, index as u32, item, now);
+                row.current = app.winamp.playlist_cursor == Some(index)
+                    && now.is_some_and(|now| now.uri == item.uri());
+                row.queued = app
+                    .winamp
+                    .playlist_cursor
+                    .and_then(|cursor| index.checked_sub(cursor + 1));
+                row
+            })
+            .collect();
+        return (
+            rows,
+            queue
+                .map(|q| q.queue.iter().map(|item| item.uri().to_owned()).collect())
+                .unwrap_or_default(),
+        );
+    }
     let ids = |item: &PlayableItem| match item {
         PlayableItem::Track(track) => (
             track.album.as_ref().map(|album| album.id.clone()),
@@ -295,6 +339,7 @@ fn rows(app: &App, now: Option<&NowPlaying>) -> (Vec<Row>, Vec<String>) {
             duration_ms: item.duration_ms(),
             current: true,
             queued: None,
+            play: None,
             album_id,
             artist_id,
         });
@@ -305,6 +350,7 @@ fn rows(app: &App, now: Option<&NowPlaying>) -> (Vec<Row>, Vec<String>) {
             duration_ms: now.duration_ms,
             current: true,
             queued: None,
+            play: None,
             album_id: now.album_id.clone(),
             artist_id: now.artists.first().and_then(|artist| artist.id.clone()),
         });
@@ -324,12 +370,40 @@ fn rows(app: &App, now: Option<&NowPlaying>) -> (Vec<Row>, Vec<String>) {
             duration_ms: item.duration_ms(),
             current: false,
             queued: Some(index),
+            play: Some((RowContext::Queue, index as u32)),
             album_id,
             artist_id,
         });
     }
     let uris = queued.iter().map(|item| item.uri().to_string()).collect();
     (rows, uris)
+}
+
+fn collection_row(
+    app: &App,
+    context: &RowContext,
+    index: u32,
+    item: &PlayableItem,
+    now: Option<&NowPlaying>,
+) -> Row {
+    let (album_id, artist_id) = match item {
+        PlayableItem::Track(track) => (
+            track.album.as_ref().map(|album| album.id.clone()),
+            track.artists.first().and_then(|artist| artist.id.clone()),
+        ),
+        _ => (None, None),
+    };
+    Row {
+        uri: item.uri().to_owned(),
+        label: label(index as usize + 1, &item.subtitle(), item.name()),
+        duration_ms: item.duration_ms(),
+        current: now.is_some_and(|now| now.uri == item.uri())
+            && app.row_is_played_copy(context, index as usize, item.uri()),
+        queued: None,
+        play: app.row_playable(item).then(|| (context.clone(), index)),
+        album_id,
+        artist_id,
+    }
 }
 
 fn label(number: usize, subtitle: &str, title: &str) -> String {
@@ -416,6 +490,19 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             area.width,
             layout::PLAYLIST_TRACK_HEIGHT,
         );
+        let duration = util::format_duration_ms(row.duration_ms);
+        let duration_width = app.winamp.playlist_text.width(&duration).ceil() as u32;
+        let heart_width = if row.uri.starts_with("spotify:track:") {
+            11
+        } else {
+            0
+        };
+        let heart = Area::new(
+            line.x + line.width - pad - duration_width - heart_width,
+            line.y,
+            heart_width,
+            line.height,
+        );
         let rect = view.rect(line);
         let response = view.ui.interact(
             rect,
@@ -423,7 +510,11 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             Sense::click(),
         );
         crate::autoscroll::row(view.ui, &response);
-        if response.clicked() {
+        let on_heart = heart_width > 0
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|pos| view.rect(heart).contains(pos));
+        if response.clicked() && !on_heart {
             let adding = view.ui.ctx().input(|input| input.modifiers.command);
             // Selection is by row, not by song: the same song can sit in
             // the list more than once and one click means one row.
@@ -439,12 +530,13 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             }
         }
         if response.double_clicked()
-            && let Some(index) = row.queued
+            && !on_heart
+            && let Some((context, index)) = &row.play
         {
             app.actions.push(Action::PlayFromRow {
-                context: RowContext::Queue,
+                context: context.clone(),
                 uri: row.uri.clone(),
-                index: index as u32,
+                index: *index,
             });
         }
         if app.winamp.playlist_selection.contains(&(scroll + offset)) {
@@ -456,9 +548,9 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             style.normal
         });
         let text = &mut app.winamp.playlist_text;
-        let duration = util::format_duration_ms(row.duration_ms);
-        let duration_width = text.width(&duration).ceil() as u32;
-        let title_room = line.width.saturating_sub(3 * pad + duration_width);
+        let title_room = line
+            .width
+            .saturating_sub(3 * pad + duration_width + heart_width);
         let title = fit(text, &row.label, title_room as f32);
         let duration_line = text.line(&ctx, &duration);
         let duration_at = Area::new(
@@ -487,6 +579,9 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], height: u32) {
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(uv_right, 1.0)),
             color,
         );
+        if heart_width > 0 {
+            super::track_like_button(app, view, &row.uri, heart, false);
+        }
     }
 }
 
@@ -890,6 +985,223 @@ mod tests {
         assert_eq!(list_area(174), Area::new(12, 20, 243, 116));
     }
 
+    fn demo_app(name: &str) -> App {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-winamp-{name}-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            crate::paths::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            crate::app::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+                autostart: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+        app
+    }
+
+    #[test]
+    fn advancing_and_returning_keep_the_complete_playlist_and_its_positions() {
+        let mut app = demo_app("stable-playlist");
+        let now = app.now_playing();
+        let (before, _) = rows(&app, now.as_ref());
+        assert!(before.len() > 2);
+        let uris: Vec<_> = before.iter().map(|row| row.uri.clone()).collect();
+        app.winamp.playlist_selection.insert(1);
+        app.winamp.playlist_scroll = 2;
+        app.prepare_winamp_playlist();
+        // Set the view after the initial source is established.
+        app.winamp.playlist_selection.insert(1);
+        app.winamp.playlist_scroll = 2;
+        let item = app.winamp_collection().unwrap().1[2].1.clone();
+        app.remote.as_mut().unwrap().state.item = Some(item.clone());
+        app.queue.get_mut().unwrap().currently_playing = Some(item);
+        app.queue.get_mut().unwrap().queue.clear();
+        app.prepare_winamp_playlist();
+        let (after, _) = rows(&app, app.now_playing().as_ref());
+        assert_eq!(
+            after.iter().map(|row| row.uri.clone()).collect::<Vec<_>>(),
+            uris
+        );
+        assert!(after[2].current);
+        assert!(!after[0].current);
+        assert_eq!(app.winamp.playlist_scroll, 2);
+        assert!(app.winamp.playlist_selection.contains(&1));
+        assert!(matches!(
+            &after[0].play,
+            Some((RowContext::Context { .. }, 0))
+        ));
+        let first = app.winamp_collection().unwrap().1[0].1.clone();
+        app.remote.as_mut().unwrap().state.item = Some(first);
+        let (back, _) = rows(&app, app.now_playing().as_ref());
+        assert!(back[0].current);
+        assert_eq!(back.len(), before.len());
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn liked_songs_and_repeated_playlist_rows_keep_their_real_positions() {
+        let mut app = demo_app("collection-positions");
+        app.remote
+            .as_mut()
+            .unwrap()
+            .state
+            .context
+            .as_mut()
+            .unwrap()
+            .uri = "spotify:user:demo:collection".into();
+        let (liked, _) = rows(&app, app.now_playing().as_ref());
+        assert_eq!(liked.len(), app.library.liked.items.len());
+        assert!(
+            matches!(&liked[0].play, Some((RowContext::Context { uri, .. }, 0)) if uri.ends_with(":collection"))
+        );
+        app.remote
+            .as_mut()
+            .unwrap()
+            .state
+            .context
+            .as_mut()
+            .unwrap()
+            .uri = "spotify:playlist:pl1".into();
+        let page = app.playlist_pages.get_mut("pl1").unwrap();
+        let first = page.items.items[0].clone();
+        page.items.items.insert(1, first);
+        let (before, _) = rows(&app, app.now_playing().as_ref());
+        let (context, index) = before[1].play.clone().unwrap();
+        app.apply(
+            Action::PlayFromRow {
+                context,
+                uri: before[1].uri.clone(),
+                index,
+            },
+            &egui::Context::default(),
+        );
+        let (after, _) = rows(&app, app.now_playing().as_ref());
+        assert!(!after[0].current);
+        assert!(after[1].current);
+        assert_eq!(after[0].uri, after[1].uri);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn a_loose_queue_keeps_played_rows_and_duplicate_occurrences() {
+        let mut app = demo_app("loose-playlist");
+        app.remote.as_mut().unwrap().state.context = None;
+        let first = app.now_playing_item().unwrap();
+        let second = app.queue.get().unwrap().queue[0].clone();
+        app.queue.get_mut().unwrap().queue = vec![second.clone(), first.clone()];
+        app.prepare_winamp_playlist();
+        assert_eq!(app.winamp.playlist_history.len(), 3);
+        app.remote.as_mut().unwrap().state.item = Some(second.clone());
+        app.queue.get_mut().unwrap().currently_playing = Some(second);
+        app.queue.get_mut().unwrap().queue = vec![first.clone()];
+        app.prepare_winamp_playlist();
+        assert_eq!(app.winamp.playlist_cursor, Some(1));
+        app.remote.as_mut().unwrap().state.item = Some(first.clone());
+        app.queue.get_mut().unwrap().currently_playing = Some(first);
+        app.queue.get_mut().unwrap().queue.clear();
+        app.prepare_winamp_playlist();
+        assert_eq!(app.winamp.playlist_cursor, Some(2));
+        let (rows, _) = rows(&app, app.now_playing().as_ref());
+        assert_eq!(rows.len(), 3);
+        assert!(!rows[0].current);
+        assert!(rows[2].current);
+        app.settings.winamp_window = true;
+        let (context, index) = rows[0].play.clone().unwrap();
+        app.apply(
+            Action::PlayFromRow {
+                context,
+                uri: rows[0].uri.clone(),
+                index,
+            },
+            &egui::Context::default(),
+        );
+        app.prepare_winamp_playlist();
+        assert_eq!(app.winamp.playlist_cursor, Some(0));
+        assert_eq!(app.winamp.playlist_history.len(), 3);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn the_row_heart_toggles_optimistically_without_selecting_or_playing() {
+        let mut app = demo_app("row-heart");
+        let ctx = egui::Context::default();
+        let (rows, _) = rows(&app, app.now_playing().as_ref());
+        let uri = rows[0].uri.clone();
+        let saved = app.is_saved(&uri).unwrap();
+        app.winamp.playlist_selection.insert(2);
+        let mut pos = egui::Pos2::ZERO;
+        let mut draw = |app: &mut App, events| {
+            let skin = app.winamp.skin.clone();
+            let textures = app.winamp.textures(&ctx);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let mut view = View {
+                        ui,
+                        origin: egui::Pos2::ZERO,
+                        unit: 2.0,
+                        skin: &skin,
+                        textures: &textures,
+                        mask: None,
+                    };
+                    list(app, &mut view, &rows, 174);
+                    let duration = util::format_duration_ms(rows[0].duration_ms);
+                    let width = app.winamp.playlist_text.width(&duration).ceil();
+                    pos = egui::pos2((12.0 + 243.0 - 3.0 - width - 5.0) * 2.0, 52.0);
+                },
+            );
+            output.textures_delta.clear();
+            pos
+        };
+        draw(&mut app, vec![]);
+        let pos = draw(&mut app, vec![]);
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        draw(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            matches!(app.actions.as_slice(), [Action::ToggleSaved(held)] if held == &uri),
+            "{:?}",
+            app.actions
+        );
+        assert_eq!(
+            app.winamp.playlist_selection,
+            std::collections::HashSet::from([2])
+        );
+        let action = app.actions.pop().unwrap();
+        app.apply(action, &ctx);
+        assert_eq!(app.is_saved(&uri), Some(!saved));
+        app.backend.shutdown();
+    }
+
     /// REM's Remove selected names queue rows, not list rows: the list
     /// opens with the playing song, so a selected line sits one below its
     /// place in the queue. Only the songs the user queued go (#721).
@@ -933,6 +1245,7 @@ mod tests {
             .map(|item| item.uri().to_string())
             .collect();
         app.manual_queue = queued.clone();
+        app.remote.as_mut().unwrap().state.context = None;
         let (rows, _) = rows(&app, now.as_ref());
         assert!(rows[0].current);
         // The second queued song, and the first song of Next up after it.

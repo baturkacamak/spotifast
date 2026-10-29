@@ -100,7 +100,10 @@ pub struct WinampState {
     /// The playlist window: its first visible row, the row clicked, the
     /// wheel's leftover, and the corner drag's leftover.
     pub playlist_scroll: usize,
-    /// The rows selected, by URI; Ctrl-click adds and removes, SEL has
+    pub playlist_source: Option<String>,
+    pub playlist_history: Vec<crate::api::models::PlayableItem>,
+    pub playlist_cursor: Option<usize>,
+    /// The rows selected, by position; Ctrl-click adds and removes, SEL has
     /// the rest.
     pub playlist_selection: std::collections::HashSet<usize>,
     pub playlist_wheel: f32,
@@ -134,6 +137,9 @@ impl WinampState {
             analyser: Analyser::default(),
             eq,
             playlist_scroll: 0,
+            playlist_source: None,
+            playlist_history: Vec::new(),
+            playlist_cursor: None,
             playlist_selection: std::collections::HashSet::new(),
             playlist_wheel: 0.0,
             playlist_resize: 0.0,

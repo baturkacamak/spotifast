@@ -6948,6 +6948,7 @@ mod tests {
         app.backend.shutdown();
     }
 
+    #[cfg(feature = "demo")]
     #[test]
     fn the_collapsed_winamp_visualizer_draws_and_repaints_only_while_moving() {
         use crate::settings::VisMode;
