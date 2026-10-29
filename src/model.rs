@@ -1171,6 +1171,13 @@ pub enum Action {
         uri: String,
         track: Box<Track>,
     },
+    /// Browse a song's radio inside the mini player without starting playback.
+    OpenWinampRadio {
+        uri: String,
+        track: Box<Track>,
+    },
+    ShowWinampRadio(bool),
+    CloseWinampRadio,
     /// Extracts a page's tint while its library row is hovered.
     PrepareTint(String),
     OpenUri(String),

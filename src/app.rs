@@ -3126,6 +3126,8 @@ impl App {
         self.saved_pending.clear();
         self.winamp.playlist_history.clear();
         self.winamp.playlist_source = None;
+        self.winamp.playlist_pinned_source = None;
+        self.winamp.radio_tab = None;
         self.winamp.playlist_cursor = None;
         self.winamp.playlist_selection.clear();
         self.winamp.playlist_scroll = 0;
@@ -8887,6 +8889,20 @@ impl App {
         let mut protected_artists = HashSet::new();
         let mut protected_shows = HashSet::new();
         let mut protected_radios = HashSet::new();
+        if let Some(tab) = &self.winamp.radio_tab {
+            protected_radios.insert(tab.seed.clone());
+        }
+        if let Some(Some(uri)) = &self.winamp.playlist_pinned_source {
+            match Page::from_uri(uri) {
+                Some(Page::Playlist(id)) => {
+                    protected_playlists.insert(id);
+                }
+                Some(Page::Album(id)) => {
+                    protected_albums.insert(id);
+                }
+                _ => {}
+            }
+        }
         if let Some(seed) = self
             .playing_context_uri()
             .and_then(|uri| util::station_seed(&uri))
@@ -11065,7 +11081,18 @@ impl App {
         ) {
             self.supersede_play_search();
         }
+        if matches!(
+            &action,
+            Action::PlayContext { .. } | Action::ShufflePlay(_) | Action::PlayUris { .. }
+        ) || (!self.settings.winamp_window && matches!(&action, Action::PlayFromRow { .. }))
+        {
+            self.show_winamp_radio(false);
+            self.winamp.playlist_pinned_source = None;
+        }
         match action {
+            Action::OpenWinampRadio { uri, track } => self.open_winamp_radio(uri, &track),
+            Action::ShowWinampRadio(showing) => self.show_winamp_radio(showing),
+            Action::CloseWinampRadio => self.close_winamp_radio(),
             Action::Open(page) => self.open(page),
             Action::OpenSongRadio { uri, track } => self.open_song_radio(&uri, &track),
             Action::PrepareTint(url) => {

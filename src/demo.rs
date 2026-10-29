@@ -1502,6 +1502,55 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     app.winamp.tap.push(&demo_sound(), 1.0);
                 }
             }
+            "winamp-radio"
+            | "winamp-radio-original"
+            | "winamp-radio-loading"
+            | "winamp-radio-error"
+            | "winamp-radio-empty" => {
+                app.settings.winamp_window = true;
+                app.settings.skin = None;
+                app.settings.skin_scale = Some(2);
+                app.settings.playlist_open = true;
+                let seed = "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_string();
+                let mut source = track(0);
+                source.id = Some("4uLU6hMCjMI75M1A2tKUQC".into());
+                source.uri = seed.clone();
+                let songs = (1..9).map(track).collect();
+                app.radio_pages.insert(
+                    seed.clone(),
+                    RadioPage {
+                        songs: Loadable::Loaded(songs),
+                        uri: Some("spotify:playlist:37i9dQZF1E4AaxlmEozmrV".into()),
+                        ..Default::default()
+                    },
+                );
+                app.prepare_winamp_playlist();
+                app.winamp.playlist_scroll = 1;
+                app.winamp.playlist_selection.insert(2);
+                app.apply(
+                    Action::OpenWinampRadio {
+                        uri: seed.clone(),
+                        track: Box::new(source),
+                    },
+                    &egui::Context::default(),
+                );
+                match surface {
+                    "winamp-radio-original" => {
+                        app.apply(Action::ShowWinampRadio(false), &egui::Context::default())
+                    }
+                    "winamp-radio-loading" => {
+                        app.radio_pages.get_mut(&seed).unwrap().songs = Loadable::Loading
+                    }
+                    "winamp-radio-error" => {
+                        app.radio_pages.get_mut(&seed).unwrap().songs =
+                            Loadable::Failed("Radio unavailable. Click to retry.".into())
+                    }
+                    "winamp-radio-empty" => {
+                        app.radio_pages.get_mut(&seed).unwrap().songs = Loadable::Loaded(Vec::new())
+                    }
+                    _ => {}
+                }
+            }
             "playlist" => app.settings.playlist_open = true,
             "shade" => app.settings.winamp_shaded = true,
             "playlist-shade" => app.settings.playlist_shaded = true,

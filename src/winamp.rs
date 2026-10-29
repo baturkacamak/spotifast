@@ -66,6 +66,14 @@ pub struct Loaded {
     pub installed: bool,
 }
 
+/// A radio's view state. `scroll` and `selection` belong to the inactive tab.
+pub struct RadioTab {
+    pub seed: String,
+    pub showing: bool,
+    pub scroll: usize,
+    pub selection: std::collections::HashSet<usize>,
+}
+
 pub struct WinampState {
     /// The skin on screen.
     pub skin: Arc<Skin>,
@@ -101,6 +109,10 @@ pub struct WinampState {
     /// wheel's leftover, and the corner drag's leftover.
     pub playlist_scroll: usize,
     pub playlist_source: Option<String>,
+    /// Freeze the original list while browsing or playing a radio.
+    /// None follows playback; Some(None) pins a loose list without a context.
+    pub playlist_pinned_source: Option<Option<String>>,
+    pub radio_tab: Option<RadioTab>,
     pub playlist_history: Vec<crate::api::models::PlayableItem>,
     pub playlist_cursor: Option<usize>,
     /// The rows selected, by position; Ctrl-click adds and removes, SEL has
@@ -138,6 +150,8 @@ impl WinampState {
             eq,
             playlist_scroll: 0,
             playlist_source: None,
+            playlist_pinned_source: None,
+            radio_tab: None,
             playlist_history: Vec::new(),
             playlist_cursor: None,
             playlist_selection: std::collections::HashSet::new(),

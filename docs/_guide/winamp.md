@@ -106,7 +106,7 @@ along with the remaining queue. The main window still offers the live queue.
 
 - **ADD** opens search or Liked Songs.
 - **SEL** selects rows.
-- **MISC** opens song, artist, and album pages.
+- **MISC** opens song, artist, and album pages, or the selected song’s radio.
 - **LIST OPTS** starts one of your playlists or saves the queue as a new one.
   **LIST OPTS → Mix** shows Spotify's options for the playlist that is
   playing, such as "Give me more indie pop" on Discover Weekly. Choosing one
@@ -119,6 +119,19 @@ along with the remaining queue. The main window still offers the live queue.
   queue when it is showing a loose queue, and **REM → Remove all** clears every
   song you queued. Both work when
   this computer is playing. Songs from the playing album or playlist stay.
+
+Right-click a Spotify song and choose **Go to song radio**, or use **MISC**,
+to open its radio in a second tab inside the playlist panel. Opening the tab
+does not change playback. Double-click a radio song to start that mix from the
+chosen row. The **Playlist** tab keeps the original list and its scroll
+position and selection; each tab remembers its own. Double-click an original
+playlist row to return to playing that list. The radio tab's X closes its view
+without stopping playback or replacing the original playlist. Starting another
+playlist from **LIST OPTS** or the main window follows that new playlist.
+
+Radio uses the existing local playback session and has the same availability
+as the main window's radio page. Loading, an empty result, or an error stays in
+the radio tab. Click the error to retry; the original playlist remains usable.
 
 Notices from the main window scroll through the mini player's text display.
 

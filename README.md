@@ -91,7 +91,8 @@ A classic look for your music, with Winamp 2 `.wsz` skins, an equalizer,
 a playlist, and animated sound displays. Switch with **Ctrl+M**
 (**Cmd+Shift+M** on macOS), the shrink button, or Settings.
 The playlist keeps already played songs, highlights the current song, and lets
-you save or unsave songs with a heart on each row. The spectrum analyser and
+you save or unsave songs with a heart on each row. Browse a song’s radio in a
+second playlist tab while keeping your original list. The spectrum analyser and
 oscilloscope also work in the collapsed title bar.
 
 <p align="center">
